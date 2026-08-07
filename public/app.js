@@ -216,13 +216,15 @@ async function boot() {
   document.getElementById('user-chip').textContent =
     `${S.user.name} · ${roleLabel}${S.user.location_name ? ' · ' + S.user.location_name : ''}`;
 
-  document.querySelectorAll('[data-role]').forEach((el) => {
-    el.classList.toggle('hidden', el.dataset.role !== S.user.role);
+  document.querySelectorAll('.sidenav a').forEach((a) => {
+    a.classList.toggle('hidden', !mayOpen(a.dataset.nav));
   });
 
   await refreshProducts();
-  if (!location.hash) location.hash = '#/dashboard';
-  render();
+  const wanted = currentRoute();
+  const target = mayOpen(wanted) ? wanted : homeView();
+  if (location.hash !== '#/' + target) location.hash = '#/' + target; // fires hashchange
+  else render();
 }
 
 async function refreshProducts() {
@@ -240,10 +242,40 @@ const VIEWS = {
   users: viewUsers,
 };
 
+// Which roles may open each section. Drives the sidebar and guards typed URLs.
+// The server enforces the same rules — this is convenience, not security.
+const NAV_ROLES = {
+  dashboard: ['admin', 'manager'],
+  stock:     ['admin', 'manager', 'staff'],
+  movements: ['admin', 'manager', 'staff'],
+  batches:   ['admin', 'manager'],
+  products:  ['admin', 'manager'],
+  locations: ['admin'],
+  users:     ['admin'],
+};
+
+function mayOpen(name) {
+  const roles = NAV_ROLES[name];
+  return !!roles && !!S.user && roles.includes(S.user.role);
+}
+
+function homeView() {
+  return Object.keys(NAV_ROLES).find(mayOpen) || 'stock';
+}
+
+function currentRoute() {
+  return (location.hash.replace('#/', '') || '').split('?')[0];
+}
+
 async function render() {
   if (!S.user) return;
-  const name = (location.hash.replace('#/', '') || 'dashboard').split('?')[0];
-  const fn = VIEWS[name] || viewDashboard;
+  let name = currentRoute();
+  if (!VIEWS[name] || !mayOpen(name)) {
+    const home = homeView();
+    if (location.hash !== '#/' + home) { location.hash = '#/' + home; return; }
+    name = home;
+  }
+  const fn = VIEWS[name];
   document.querySelectorAll('.sidenav a').forEach((a) => {
     a.classList.toggle('active', a.dataset.nav === name);
   });
