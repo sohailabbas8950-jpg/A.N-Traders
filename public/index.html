@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>A.N Traders — Inventory</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📦</text></svg>">
+<link rel="stylesheet" href="/styles.css">
+</head>
+<body>
+
+<div id="login" class="login-screen hidden">
+  <form class="login-card" id="login-form">
+    <div class="brand">
+      <div class="brand-mark">AN</div>
+      <div>
+        <h1>A.N Traders</h1>
+        <p>Inventory Management</p>
+      </div>
+    </div>
+    <label>Username
+      <input name="username" autocomplete="username" required autofocus>
+    </label>
+    <label>Password
+      <input name="password" type="password" autocomplete="current-password" required>
+    </label>
+    <div class="login-error" id="login-error" hidden></div>
+    <button class="btn primary block" type="submit">Sign in</button>
+  </form>
+</div>
+
+<div id="app" class="hidden">
+  <header class="topbar">
+    <button class="menu-toggle" id="menu-toggle" aria-label="Menu">☰</button>
+    <div class="brand small">
+      <div class="brand-mark">AN</div>
+      <div><h1>A.N Traders</h1><p>Inventory</p></div>
+    </div>
+    <div class="topbar-right">
+      <span class="user-chip" id="user-chip"></span>
+      <button class="btn ghost" id="btn-password">Password</button>
+      <button class="btn ghost" id="btn-logout">Sign out</button>
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="sidenav" id="sidenav">
+      <a href="#/dashboard" data-nav="dashboard"><span>▦</span> Dashboard</a>
+      <a href="#/stock" data-nav="stock"><span>▤</span> Stock</a>
+      <a href="#/movements" data-nav="movements"><span>⇄</span> Movements</a>
+      <a href="#/batches" data-nav="batches"><span>◷</span> Batches</a>
+      <a href="#/products" data-nav="products"><span>❏</span> Products</a>
+      <a href="#/locations" data-nav="locations" data-role="admin"><span>⌂</span> Locations</a>
+      <a href="#/users" data-nav="users" data-role="admin"><span>◕</span> Users</a>
+    </nav>
+    <main id="view"></main>
+  </div>
+</div>
+
+<div class="modal-backdrop hidden" id="modal-backdrop">
+  <div class="modal" id="modal" role="dialog" aria-modal="true"></div>
+</div>
+
+<div class="toast-wrap" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,9 @@
+node_modules/
+data/
+.env
+.env.local
+.vercel
+*.log
+
+# Commercial data - supplier cost prices. Keep local, out of the repo.
+product-catalogue.csv
