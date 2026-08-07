@@ -16,9 +16,28 @@ function esc(v) {
   ));
 }
 
+// Converted quantities are often small — 5 ML of fragrance is 0.005 Kg — so
+// show enough decimals for a sub-unit figure to survive rounding.
 function fmtQty(n) {
   const v = Number(n) || 0;
-  return v.toLocaleString('en-PK', { maximumFractionDigits: 2 });
+  const abs = Math.abs(v);
+  return v.toLocaleString('en-PK', {
+    maximumFractionDigits: abs > 0 && abs < 1 ? 4 : 2,
+  });
+}
+
+function round4(n) {
+  return Math.round(Number(n) * 1e4) / 1e4;
+}
+
+// Movement quantity for a table cell. Where the product was entered in another
+// unit, lead with what the storekeeper typed and show the stock figure beneath,
+// so the row matches both their paperwork and the balance it moved.
+function qtyCell(m) {
+  const stock = `<strong>${fmtQty(m.qty)}</strong> <span style="color:var(--muted)">${esc(m.unit)}</span>`;
+  if (!m.entry_unit) return stock;
+  return `<strong>${fmtQty(m.entry_qty)}</strong> <span style="color:var(--muted)">${esc(m.entry_unit)}</span>`
+    + `<div class="hint">${fmtQty(m.qty)} ${esc(m.unit)}</div>`;
 }
 
 function fmtMoney(n) {
@@ -452,7 +471,7 @@ function movementsTable(rows, opts = {}) {
           <td><span class="pill ${esc(m.kind)}">${esc(labels[m.kind] || m.kind)}</span></td>
           <td class="mono">${esc(m.sku)}</td>
           <td class="wrap">${esc(m.product_name)}</td>
-          <td class="num"><strong>${fmtQty(m.qty)}</strong> <span style="color:var(--muted)">${esc(m.unit)}</span></td>
+          <td class="num">${qtyCell(m)}</td>
           <td>${esc(m.from_name || '—')}</td>
           <td>${esc(m.to_name || '—')}</td>
           <td class="mono">${esc(m.batch_no || '—')}</td>
@@ -557,8 +576,9 @@ function openMovementModal(preset, onDone) {
       <label id="wrap-to"><span id="to-label">To location</span>
         <select id="mv-to">${locOpts(writable)}</select></label>
 
-      <label>Quantity <span class="hint" id="qty-hint"></span>
-        <input type="number" id="mv-qty" step="any" placeholder="0"></label>
+      <label><span id="qty-label">Quantity</span> <span class="hint" id="qty-hint"></span>
+        <input type="number" id="mv-qty" step="any" placeholder="0">
+        <span class="hint" id="qty-convert"></span></label>
       <label>Date
         <input type="date" id="mv-date" value="${todayStr()}"></label>
 
@@ -608,9 +628,41 @@ function openMovementModal(preset, onDone) {
     m.querySelector('#wrap-party').classList.toggle('hidden', k === 'transfer' || k === 'adjust');
   }
 
+  // Some products are measured out in one unit but stocked in another — a
+  // fragrance is poured in ML but held in KG. Label the box with the unit the
+  // storekeeper actually uses, and show what it becomes in stock as they type.
+  function selectedProduct() {
+    return S.products.find((p) => String(p.id) === m.querySelector('#mv-product').value);
+  }
+
+  function applyProduct() {
+    const p = selectedProduct();
+    const label = m.querySelector('#qty-label');
+    const conv = m.querySelector('#qty-convert');
+    if (!p) return;
+    const entry = p.entry_unit && p.entry_factor > 0;
+    label.textContent = `Quantity (${entry ? p.entry_unit : p.unit})`;
+    conv.classList.toggle('hidden', !entry);
+    updateConversion();
+  }
+
+  function updateConversion() {
+    const p = selectedProduct();
+    const conv = m.querySelector('#qty-convert');
+    if (!p || !p.entry_unit || !(p.entry_factor > 0)) { conv.textContent = ''; return; }
+    const typed = Number(m.querySelector('#mv-qty').value);
+    conv.textContent = typed
+      ? `= ${round4(typed / p.entry_factor)} ${p.unit} in stock`
+      : `${p.entry_factor} ${p.entry_unit} = 1 ${p.unit}`;
+  }
+
+  m.querySelector('#mv-product').addEventListener('change', applyProduct);
+  m.querySelector('#mv-qty').addEventListener('input', updateConversion);
+
   m.querySelectorAll('#kind-tabs button').forEach((b) =>
     b.addEventListener('click', () => applyKind(b.dataset.kind)));
   applyKind(kind);
+  applyProduct();
 
   m.querySelector('#mv-save').addEventListener('click', async () => {
     const btn = m.querySelector('#mv-save');
@@ -718,7 +770,8 @@ async function viewProducts(view) {
             <td class="mono">${esc(p.sku)}</td>
             <td class="wrap">${esc(p.name)}</td>
             <td style="color:var(--muted)">${esc(p.category || '—')}</td>
-            <td>${esc(p.unit)}</td>
+            <td>${esc(p.unit)}${p.entry_unit && p.entry_factor > 0
+              ? `<div class="hint">entered in ${esc(p.entry_unit)}</div>` : ''}</td>
             <td>${esc(p.pack_size || '—')}</td>
             <td class="num">${p.reorder_level ? fmtQty(p.reorder_level) : '—'}</td>
             <td class="num">${esc(fmtMoney(p.cost_price))}</td>
@@ -760,6 +813,15 @@ function openProductModal(p) {
         </datalist></label>
       <label>Pack size <span class="hint">optional</span>
         <input id="p-pack" value="${esc(p?.pack_size || '')}" placeholder="5 L Can"></label>
+
+      <label>Record movements in <span class="hint">leave blank to use the stock unit</span>
+        <input id="p-entry-unit" value="${esc(p?.entry_unit || '')}" list="entry-units" placeholder="e.g. ML">
+        <datalist id="entry-units">
+          <option>ML</option><option>Gram</option><option>Piece</option>
+        </datalist></label>
+      <label>…that equal one stock unit <span class="hint">1000 ML = 1 Kg at density 1.0</span>
+        <input type="number" id="p-entry-factor" step="any" min="0"
+               value="${p?.entry_factor || ''}" placeholder="1000"></label>
       <label>Reorder level
         <input type="number" id="p-reorder" step="any" value="${Number(p?.reorder_level || 0)}"></label>
       <label>Cost price <span class="hint">Rs per unit</span>
@@ -780,6 +842,8 @@ function openProductModal(p) {
       name: m.querySelector('#p-name').value,
       category_id: m.querySelector('#p-cat').value || null,
       unit: m.querySelector('#p-unit').value,
+      entry_unit: m.querySelector('#p-entry-unit').value,
+      entry_factor: m.querySelector('#p-entry-factor').value,
       pack_size: m.querySelector('#p-pack').value,
       reorder_level: m.querySelector('#p-reorder').value,
       cost_price: m.querySelector('#p-cost').value,
