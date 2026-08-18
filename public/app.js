@@ -297,6 +297,8 @@ function currentRoute() {
   return (location.hash.replace('#/', '') || '').split('?')[0];
 }
 
+let renderSeq = 0;
+
 async function render() {
   if (!S.user) return;
   let name = currentRoute();
@@ -312,10 +314,15 @@ async function render() {
   document.getElementById('sidenav').classList.remove('open');
   const view = document.getElementById('view');
   view.innerHTML = '<div class="empty">Loading…</div>';
+  // Navigating again before a view's own data fetch has resolved (e.g.
+  // clicking Dashboard then immediately Stock counts) must not let that
+  // stale fetch's callback overwrite the page the user is now looking at.
+  const myToken = ++renderSeq;
+  const isCurrent = () => myToken === renderSeq;
   try {
-    await fn(view);
+    await fn(view, isCurrent);
   } catch (ex) {
-    view.innerHTML = `<div class="card"><div class="empty">${esc(ex.message)}</div></div>`;
+    if (isCurrent()) view.innerHTML = `<div class="card"><div class="empty">${esc(ex.message)}</div></div>`;
   }
 }
 
@@ -323,8 +330,9 @@ window.addEventListener('hashchange', render);
 
 // ------------------------------------------------------------ dashboard
 
-async function viewDashboard(view) {
+async function viewDashboard(view, isCurrent) {
   const d = await api('/api/dashboard');
+  if (!isCurrent()) return;
 
   view.innerHTML = `
     <div class="page-head">
@@ -710,8 +718,9 @@ function openMovementModal(preset, onDone) {
 
 // ------------------------------------------------------------ batches
 
-async function viewBatches(view) {
+async function viewBatches(view, isCurrent) {
   const d = await api('/api/batches');
+  if (!isCurrent()) return;
   const today = todayStr();
   const soon = new Date(Date.now() + 90 * 864e5).toISOString().slice(0, 10);
 
@@ -759,11 +768,12 @@ function countRoute() {
   return id ? Number(id) : null;
 }
 
-async function viewCounts(view) {
+async function viewCounts(view, isCurrent) {
   const id = countRoute();
-  if (id) return viewCountDetail(view, id);
+  if (id) return viewCountDetail(view, id, isCurrent);
 
   const d = await api('/api/counts');
+  if (!isCurrent()) return;
   const canCreate = writableLocations().length > 0;
 
   view.innerHTML = `
@@ -803,8 +813,9 @@ async function viewCounts(view) {
   if (canCreate) view.querySelector('#new-count').addEventListener('click', openNewCountModal);
 }
 
-async function viewCountDetail(view, id) {
+async function viewCountDetail(view, id, isCurrent) {
   const d = await api('/api/counts/' + id);
+  if (!isCurrent()) return;
   const c = d.count;
   const canWriteHere = canWrite(c.location_id);
   const canApprove = (S.user.role === 'admin' || S.user.role === 'manager') && canWriteHere;
@@ -1218,8 +1229,9 @@ function exportConsumptionPdf(d, granularity) {
 
 // ------------------------------------------------------------ products
 
-async function viewProducts(view) {
+async function viewProducts(view, isCurrent) {
   await refreshProducts();
+  if (!isCurrent()) return;
   const canEdit = S.user.role === 'admin' || S.user.role === 'manager';
 
   view.innerHTML = `
@@ -1389,8 +1401,9 @@ function openImportModal() {
 
 // ------------------------------------------------------------ locations
 
-async function viewLocations(view) {
+async function viewLocations(view, isCurrent) {
   const d = await api('/api/locations');
+  if (!isCurrent()) return;
   S.locations = d.rows;
 
   view.innerHTML = `
@@ -1470,8 +1483,9 @@ function openLocationModal(l) {
 
 // ------------------------------------------------------------ users
 
-async function viewUsers(view) {
+async function viewUsers(view, isCurrent) {
   const d = await api('/api/users');
+  if (!isCurrent()) return;
   const roleLabel = { admin: 'Administrator', manager: 'Manager', staff: 'Staff' };
 
   view.innerHTML = `
@@ -1572,8 +1586,9 @@ const MODULE_LABEL = {
   consumption: 'Consumption',
 };
 
-async function viewPermissions(view) {
+async function viewPermissions(view, isCurrent) {
   const d = await api('/api/permissions');
+  if (!isCurrent()) return;
   const cell = (role, module) => d.matrix[role][module];
 
   view.innerHTML = `
