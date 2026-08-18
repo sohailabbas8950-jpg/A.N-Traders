@@ -256,6 +256,7 @@ const VIEWS = {
   stock: viewStock,
   movements: viewMovements,
   batches: viewBatches,
+  counts: viewCounts,
   products: viewProducts,
   locations: viewLocations,
   users: viewUsers,
@@ -268,6 +269,7 @@ const NAV_ROLES = {
   stock:     ['admin', 'manager', 'staff'],
   movements: ['admin', 'manager', 'staff'],
   batches:   ['admin', 'manager'],
+  counts:    ['admin', 'manager', 'staff'],
   products:  ['admin', 'manager'],
   locations: ['admin'],
   users:     ['admin'],
@@ -731,6 +733,271 @@ async function viewBatches(view) {
             }).join('')}</tbody>
           </table>`
     }</div></div>`;
+}
+
+// ------------------------------------------------------------ counts
+
+const COUNT_STATUS = {
+  open:      ['transfer', 'Open'],
+  submitted: ['adjust', 'Submitted'],
+  approved:  ['ok', 'Approved'],
+  cancelled: ['muted', 'Cancelled'],
+};
+
+function countRoute() {
+  const q = location.hash.split('?')[1] || '';
+  const id = new URLSearchParams(q).get('id');
+  return id ? Number(id) : null;
+}
+
+async function viewCounts(view) {
+  const id = countRoute();
+  if (id) return viewCountDetail(view, id);
+
+  const d = await api('/api/counts');
+  const canCreate = writableLocations().length > 0;
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h2>Stock counts</h2>
+        <p class="page-sub">Cycle and full physical counts, with variance review before anything posts</p></div>
+      <div class="spacer"></div>
+      ${canCreate ? '<button class="btn primary" id="new-count">New count</button>' : ''}
+    </div>
+    <div class="card"><div class="table-wrap">${
+      !d.rows.length
+        ? '<div class="empty">No counts yet. Start one from a location you have access to.</div>'
+        : `<table>
+            <thead><tr><th>#</th><th>Location</th><th>Kind</th><th>Status</th>
+              <th class="num">Items</th><th class="num">Counted</th><th class="num">Variances</th>
+              <th>Started</th><th>By</th></tr></thead>
+            <tbody>${d.rows.map((c) => {
+              const st = COUNT_STATUS[c.status] || ['muted', c.status];
+              return `<tr class="row-link" data-open="${c.id}">
+                <td class="mono">#${c.id}</td>
+                <td>${esc(c.location_name)}</td>
+                <td style="text-transform:capitalize">${esc(c.kind)}</td>
+                <td><span class="pill ${st[0]}">${esc(st[1])}</span></td>
+                <td class="num">${fmtQty(c.item_count)}</td>
+                <td class="num">${fmtQty(c.counted_count)}</td>
+                <td class="num">${c.variance_count ? `<span class="pill low">${fmtQty(c.variance_count)}</span>` : '—'}</td>
+                <td style="color:var(--muted)">${fmtDateTime(c.created_at)}</td>
+                <td style="color:var(--muted)">${esc(c.created_by_name || '—')}</td>
+              </tr>`;
+            }).join('')}</tbody>
+          </table>`
+    }</div></div>`;
+
+  view.querySelectorAll('[data-open]').forEach((tr) => tr.addEventListener('click', () => {
+    location.hash = '#/counts?id=' + tr.dataset.open;
+  }));
+  if (canCreate) view.querySelector('#new-count').addEventListener('click', openNewCountModal);
+}
+
+async function viewCountDetail(view, id) {
+  const d = await api('/api/counts/' + id);
+  const c = d.count;
+  const canWriteHere = canWrite(c.location_id);
+  const canApprove = (S.user.role === 'admin' || S.user.role === 'manager') && canWriteHere;
+  const st = COUNT_STATUS[c.status] || ['muted', c.status];
+  const pendingCount = d.items.filter((i) => i.counted_qty == null).length;
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div>
+        <p class="page-sub" style="margin-bottom:4px"><a href="#/counts">← All counts</a></p>
+        <h2>Count #${c.id} <span class="pill ${st[0]}" style="vertical-align:middle">${esc(st[1])}</span></h2>
+        <p class="page-sub">${esc(c.location_name)} · ${esc(c.kind)} count · started by ${esc(c.created_by_name || '—')} on ${fmtDateTime(c.created_at)}</p>
+      </div>
+      <div class="spacer"></div>
+      ${c.status === 'open' && canWriteHere ? `
+        <button class="btn danger" id="cnt-cancel">Cancel</button>
+        <button class="btn primary" id="cnt-submit">Submit for review${pendingCount ? ` (${pendingCount} left)` : ''}</button>` : ''}
+      ${c.status === 'submitted' && canApprove ? `
+        <button class="btn danger" id="cnt-cancel">Reject / cancel</button>
+        <button class="btn primary" id="cnt-approve">Approve &amp; post adjustments</button>` : ''}
+    </div>
+
+    ${c.note ? `<div class="card" style="margin-bottom:16px"><div class="card-body">${esc(c.note)}</div></div>` : ''}
+    ${c.status === 'approved' ? `<div class="card" style="margin-bottom:16px"><div class="card-body">
+        Approved by ${esc(c.reviewed_by_name || '—')} on ${fmtDateTime(c.reviewed_at)}.
+        ${c.review_note ? esc(c.review_note) : ''}</div></div>` : ''}
+
+    <div class="card"><div class="table-wrap">
+      <table>
+        <thead><tr><th>SKU</th><th>Product</th><th class="num">System qty</th>
+          <th class="num">Counted qty</th><th class="num">Variance</th><th>By</th></tr></thead>
+        <tbody>${d.items.map((i) => {
+          const has = i.counted_qty != null;
+          const variance = has ? i.counted_qty - i.system_qty : null;
+          const editable = c.status === 'open' && canWriteHere;
+          return `<tr>
+            <td class="mono">${esc(i.sku)}</td>
+            <td class="wrap">${esc(i.product_name)}</td>
+            <td class="num">${fmtQty(i.system_qty)} <span style="color:var(--muted)">${esc(i.unit)}</span></td>
+            <td class="num">${editable
+              ? `<input type="number" step="any" min="0" class="cnt-input" data-item="${i.id}"
+                   style="width:100px;text-align:right" value="${has ? i.counted_qty : ''}" placeholder="—">`
+              : (has ? `${fmtQty(i.counted_qty)} ${esc(i.unit)}` : '<span style="color:var(--muted)">—</span>')}</td>
+            <td class="num">${has
+              ? (Math.abs(variance) > 0.0001
+                  ? `<span class="pill low">${variance > 0 ? '+' : ''}${fmtQty(variance)}</span>`
+                  : '<span class="pill ok">0</span>')
+              : '—'}</td>
+            <td style="color:var(--muted)">${esc(i.counted_by_name || '')}</td>
+          </tr>`;
+        }).join('')}</tbody>
+      </table>
+    </div></div>`;
+
+  view.querySelectorAll('.cnt-input').forEach((inp) => {
+    let timer;
+    const save = async () => {
+      const val = inp.value.trim();
+      try {
+        await api(`/api/counts/${c.id}/items/${inp.dataset.item}`, {
+          method: 'PUT',
+          body: JSON.stringify({ counted_qty: val === '' ? null : Number(val) }),
+        });
+      } catch (ex) { toast(ex.message, 'error'); }
+    };
+    inp.addEventListener('change', () => { clearTimeout(timer); save(); });
+  });
+
+  const cancelBtn = view.querySelector('#cnt-cancel');
+  if (cancelBtn) cancelBtn.addEventListener('click', async () => {
+    if (!confirm('Cancel this count? Nothing has been posted to stock yet, so nothing needs to be undone.')) return;
+    try {
+      await api(`/api/counts/${c.id}/cancel`, { method: 'POST' });
+      toast('Count cancelled', 'success');
+      render();
+    } catch (ex) { toast(ex.message, 'error'); }
+  });
+
+  const submitBtn = view.querySelector('#cnt-submit');
+  if (submitBtn) submitBtn.addEventListener('click', async () => {
+    try {
+      await api(`/api/counts/${c.id}/submit`, { method: 'POST' });
+      toast('Submitted for review', 'success');
+      render();
+    } catch (ex) { toast(ex.message, 'error'); }
+  });
+
+  const approveBtn = view.querySelector('#cnt-approve');
+  if (approveBtn) approveBtn.addEventListener('click', () => openApproveModal(c));
+}
+
+function openApproveModal(c) {
+  const m = openModal('Approve count #' + c.id, `
+    <p class="page-sub" style="margin-bottom:14px">
+      Any counted item that differs from the current stock balance will post an adjustment
+      the moment you approve. This cannot be undone from here — an administrator can still
+      delete an individual movement afterwards if needed.
+    </p>
+    <label>Review note <span class="hint">optional</span>
+      <textarea id="ap-note" rows="2"></textarea></label>`,
+    `<button class="btn" data-close>Cancel</button>
+     <button class="btn primary" id="ap-save">Approve &amp; post</button>`);
+
+  m.querySelector('#ap-save').addEventListener('click', async () => {
+    const btn = m.querySelector('#ap-save');
+    btn.disabled = true;
+    try {
+      const r = await api(`/api/counts/${c.id}/approve`, {
+        method: 'POST',
+        body: JSON.stringify({ note: m.querySelector('#ap-note').value }),
+      });
+      closeModal();
+      toast(`Approved — ${r.adjustments} adjustment${r.adjustments === 1 ? '' : 's'} posted`, 'success');
+      render();
+    } catch (ex) {
+      modalError(ex.message);
+      btn.disabled = false;
+    }
+  });
+}
+
+function openNewCountModal() {
+  const locs = writableLocations();
+  if (!locs.length) return toast('You are not assigned to a location yet', 'error');
+  if (!S.products.length) return toast('Add a product first', 'error');
+
+  const m = openModal('New stock count', `
+    <div class="form-grid">
+      <label>Location
+        <select id="nc-loc">${locs.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select></label>
+      <label>Type
+        <select id="nc-kind">
+          <option value="cycle">Cycle count — pick specific products</option>
+          <option value="full">Full count — every active product</option>
+        </select></label>
+      <label class="full">Note <span class="hint">optional</span>
+        <input id="nc-note" placeholder="e.g. Monthly cycle count — chemicals aisle"></label>
+    </div>
+    <div id="nc-picker" style="margin-top:14px">
+      <input id="nc-search" placeholder="Search products to add…" style="width:100%;margin-bottom:8px">
+      <div id="nc-list" style="max-height:260px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 10px"></div>
+      <p class="hint" id="nc-count-label" style="margin-top:6px"></p>
+    </div>`,
+    `<button class="btn" data-close>Cancel</button>
+     <button class="btn primary" id="nc-save">Start count</button>`);
+
+  const picker = m.querySelector('#nc-picker');
+  const list = m.querySelector('#nc-list');
+  const countLabel = m.querySelector('#nc-count-label');
+  const selected = new Set();
+
+  const drawList = () => {
+    const q = m.querySelector('#nc-search').value.toLowerCase();
+    const rows = S.products.filter((p) =>
+      !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
+    list.innerHTML = rows.length
+      ? rows.map((p) => `
+          <label class="checkline" style="padding:4px 0">
+            <input type="checkbox" data-pid="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>
+            <span class="mono" style="color:var(--muted)">${esc(p.sku)}</span> ${esc(p.name)}
+          </label>`).join('')
+      : '<div class="empty">No products match.</div>';
+    list.querySelectorAll('[data-pid]').forEach((cb) => cb.addEventListener('change', () => {
+      const pid = Number(cb.dataset.pid);
+      if (cb.checked) selected.add(pid); else selected.delete(pid);
+      countLabel.textContent = `${selected.size} product${selected.size === 1 ? '' : 's'} selected`;
+    }));
+    countLabel.textContent = `${selected.size} product${selected.size === 1 ? '' : 's'} selected`;
+  };
+
+  const syncKind = () => {
+    const isFull = m.querySelector('#nc-kind').value === 'full';
+    picker.classList.toggle('hidden', isFull);
+  };
+  m.querySelector('#nc-kind').addEventListener('change', syncKind);
+  m.querySelector('#nc-search').addEventListener('input', drawList);
+  syncKind();
+  drawList();
+
+  m.querySelector('#nc-save').addEventListener('click', async () => {
+    const btn = m.querySelector('#nc-save');
+    const kind = m.querySelector('#nc-kind').value;
+    const body = {
+      location_id: m.querySelector('#nc-loc').value,
+      kind,
+      note: m.querySelector('#nc-note').value,
+    };
+    if (kind === 'cycle') {
+      if (!selected.size) return modalError('Select at least one product to count');
+      body.product_ids = [...selected];
+    }
+    btn.disabled = true;
+    try {
+      const r = await api('/api/counts', { method: 'POST', body: JSON.stringify(body) });
+      closeModal();
+      toast('Count started', 'success');
+      location.hash = '#/counts?id=' + r.id;
+    } catch (ex) {
+      modalError(ex.message);
+      btn.disabled = false;
+    }
+  });
 }
 
 // ------------------------------------------------------------ products
