@@ -1030,6 +1030,15 @@ function periodLabel(period, granularity) {
   return fmtDate(period);
 }
 
+function sumByUnit(items, qtyKey, unitKey) {
+  const totals = new Map();
+  for (const it of items) {
+    const u = it[unitKey] || '';
+    totals.set(u, (totals.get(u) || 0) + it[qtyKey]);
+  }
+  return [...totals.entries()].map(([unit, qty]) => `${fmtQty(qty)} ${unit}`).join(' + ');
+}
+
 function consumptionDefaultFrom() {
   const d = new Date();
   d.setMonth(d.getMonth() - 11);
@@ -1117,6 +1126,7 @@ async function viewConsumption(view) {
         body.innerHTML = '<div class="card"><div class="empty">No consumption recorded in this range.</div></div>';
         return;
       }
+      const singleTotalQty = d.movements.reduce((s, m) => s + m.qty, 0);
       body.innerHTML = `
         <div class="card"><div class="table-wrap">
           <table>
@@ -1130,6 +1140,10 @@ async function viewConsumption(view) {
                 <td class="wrap">${esc(m.reference || '—')}</td>
                 <td style="color:var(--muted)">${esc(m.user_name || '—')}</td></tr>`).join('')}
             </tbody>
+            <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
+              <td colspan="2">Total</td>
+              <td class="num">${fmtQty(singleTotalQty)} ${esc(d.product.unit)}</td>
+              <td colspan="3"></td></tr></tfoot>
           </table>
         </div></div>`;
     } else {
@@ -1137,6 +1151,8 @@ async function viewConsumption(view) {
         body.innerHTML = '<div class="card"><div class="empty">No consumption recorded in this range.</div></div>';
         return;
       }
+      const totalsQtyLine = sumByUnit(d.totals, 'qty', 'unit');
+      const rowsQtyLine = sumByUnit(d.rows, 'qty', 'unit');
       body.innerHTML = `
         <div class="card" style="margin-bottom:16px"><div class="card-head">Totals by product</div>
           <div class="table-wrap"><table>
@@ -1147,6 +1163,10 @@ async function viewConsumption(view) {
                 <td class="num">${fmtQty(t.qty)} ${esc(t.unit)}</td>
                 <td class="num">${fmtQty(t.movements)}</td></tr>`).join('')}
             </tbody>
+            <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
+              <td colspan="2">Total</td>
+              <td class="num">${esc(totalsQtyLine)}</td>
+              <td class="num">${fmtQty(d.grand_total.movements)}</td></tr></tfoot>
           </table></div>
         </div>
         <div class="card"><div class="card-head">Detailed breakdown</div>
@@ -1158,6 +1178,9 @@ async function viewConsumption(view) {
                 <td>${esc(periodLabel(r.period, granularity))}</td>
                 <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td></tr>`).join('')}
             </tbody>
+            <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
+              <td colspan="3">Total</td>
+              <td class="num">${esc(rowsQtyLine)}</td></tr></tfoot>
           </table></div>
         </div>`;
     }
@@ -1206,6 +1229,7 @@ function exportConsumptionPdf(d, granularity) {
     // The whole point of a single-product export is to see exactly what
     // happened, so this lists every individual issue movement rather than
     // a day/month roll-up.
+    const singleTotalQty = d.movements.reduce((s, m) => s + m.qty, 0);
     doc.autoTable({
       startY: y,
       head: [['Date', 'From', 'Qty', 'Party', 'Reference', 'By']],
@@ -1217,16 +1241,20 @@ function exportConsumptionPdf(d, granularity) {
         m.reference || '—',
         m.user_name || '—',
       ]),
+      foot: [['Total', '', `${fmtQty(singleTotalQty)} ${d.product.unit}`, '', '', '']],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
+      footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
     });
   } else {
     doc.autoTable({
       startY: y,
       head: [['SKU', 'Product', 'Qty', 'Movements']],
       body: d.totals.map((t) => [t.sku, t.name, `${fmtQty(t.qty)} ${t.unit}`, String(t.movements)]),
+      foot: [['Total', '', sumByUnit(d.totals, 'qty', 'unit'), String(d.grand_total.movements)]],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
+      footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
     });
     y = doc.lastAutoTable.finalY + 10;
     doc.setFontSize(10);
@@ -1237,8 +1265,10 @@ function exportConsumptionPdf(d, granularity) {
       startY: y,
       head: [['SKU', 'Product', granularity === 'month' ? 'Month' : 'Date', 'Qty']],
       body: d.rows.map((r) => [r.sku, r.name, periodLabel(r.period, granularity), `${fmtQty(r.qty)} ${r.unit}`]),
+      foot: [['Total', '', '', sumByUnit(d.rows, 'qty', 'unit')]],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
+      footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
     });
   }
 
