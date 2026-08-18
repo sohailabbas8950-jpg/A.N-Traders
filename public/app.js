@@ -262,6 +262,7 @@ const VIEWS = {
   movements: viewMovements,
   batches: viewBatches,
   counts: viewCounts,
+  consumption: viewConsumption,
   products: viewProducts,
   locations: viewLocations,
   users: viewUsers,
@@ -275,7 +276,7 @@ const VIEWS = {
 // permission table for dashboard/batches/counts; this is convenience for
 // everything else, not the security boundary.
 const ADMIN_ONLY_NAV = ['locations', 'users', 'permissions'];
-const CONFIGURABLE_MODULES = ['dashboard', 'stock', 'movements', 'batches', 'counts', 'products'];
+const CONFIGURABLE_MODULES = ['dashboard', 'stock', 'movements', 'batches', 'counts', 'products', 'consumption'];
 
 function mayOpen(name) {
   if (!S.user) return false;
@@ -1008,6 +1009,213 @@ function openNewCountModal() {
   });
 }
 
+// ------------------------------------------------------------ consumption
+
+function periodLabel(period, granularity) {
+  if (granularity === 'month') {
+    const [y, m] = period.split('-');
+    return new Date(Number(y), Number(m) - 1, 1).toLocaleDateString('en-GB', { month: 'short', year: 'numeric' });
+  }
+  return fmtDate(period);
+}
+
+function consumptionDefaultFrom() {
+  const d = new Date();
+  d.setMonth(d.getMonth() - 11);
+  d.setDate(1);
+  return d.toISOString().slice(0, 10);
+}
+
+async function viewConsumption(view) {
+  const locs = viewableLocations();
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h2>Consumption</h2>
+        <p class="page-sub">Stock issued to customers or used up — by day or by month, per product or across everything</p></div>
+      <div class="spacer"></div>
+      <button class="btn" id="dl-pdf">Download PDF</button>
+    </div>
+    <div class="toolbar">
+      <select id="f-product" style="min-width:220px">
+        <option value="all">All products</option>
+        ${S.products.map((p) => `<option value="${p.id}">${esc(p.sku)} — ${esc(p.name)}</option>`).join('')}
+      </select>
+      <select id="f-loc">
+        <option value="all">All my locations</option>
+        ${locs.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}
+      </select>
+      <div class="tabs" id="gran-tabs" style="border-bottom:none;margin:0">
+        <button data-gran="day" class="active">Daily</button>
+        <button data-gran="month">Monthly</button>
+      </div>
+      <label class="checkline">From <input type="date" id="f-from" value="${consumptionDefaultFrom()}"></label>
+      <label class="checkline">To <input type="date" id="f-to" value="${todayStr()}"></label>
+    </div>
+    <div id="cons-summary" class="grid stats" style="margin-bottom:16px"></div>
+    <div id="cons-body"></div>`;
+
+  let granularity = 'day';
+  let lastData = null;
+
+  const load = async () => {
+    const params = new URLSearchParams({
+      product: view.querySelector('#f-product').value,
+      location: view.querySelector('#f-loc').value,
+      granularity,
+      from: view.querySelector('#f-from').value,
+      to: view.querySelector('#f-to').value,
+    });
+    const summary = view.querySelector('#cons-summary');
+    const body = view.querySelector('#cons-body');
+    summary.innerHTML = '<div class="empty">Loading…</div>';
+    body.innerHTML = '';
+
+    let d;
+    try {
+      d = await api('/api/consumption?' + params);
+    } catch (ex) {
+      summary.innerHTML = '';
+      body.innerHTML = `<div class="card"><div class="empty">${esc(ex.message)}</div></div>`;
+      return;
+    }
+    lastData = d;
+
+    const isSingle = !!d.product;
+    summary.innerHTML = `
+      <div class="card stat"><div class="label">Total value</div>
+        <div class="value">${esc(fmtMoney(d.grand_total.value))}</div>
+        <div class="foot">${fmtDate(d.from)} – ${fmtDate(d.to)}</div></div>
+      <div class="card stat"><div class="label">Movements</div>
+        <div class="value">${fmtQty(d.grand_total.movements)}</div>
+        <div class="foot">issue movements in range</div></div>
+      ${isSingle ? `
+        <div class="card stat"><div class="label">Total quantity</div>
+          <div class="value">${fmtQty(d.totals[0] ? d.totals[0].qty : 0)}</div>
+          <div class="foot">${esc(d.product.unit)}</div></div>
+        <div class="card stat"><div class="label">Product</div>
+          <div class="value" style="font-size:16px">${esc(d.product.sku)}</div>
+          <div class="foot">${esc(d.product.name)}</div></div>`
+      : `
+        <div class="card stat"><div class="label">Products with activity</div>
+          <div class="value">${fmtQty(d.totals.length)}</div>
+          <div class="foot">of ${fmtQty(S.products.length)} total</div></div>`}
+    `;
+
+    if (!d.rows.length) {
+      body.innerHTML = '<div class="card"><div class="empty">No consumption recorded in this range.</div></div>';
+      return;
+    }
+
+    if (isSingle) {
+      body.innerHTML = `
+        <div class="card"><div class="table-wrap">
+          <table>
+            <thead><tr><th>${granularity === 'month' ? 'Month' : 'Date'}</th>
+              <th class="num">Qty</th><th class="num">Value</th><th class="num">Movements</th></tr></thead>
+            <tbody>${d.rows.map((r) => `
+              <tr><td>${esc(periodLabel(r.period, granularity))}</td>
+                <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td>
+                <td class="num">${esc(fmtMoney(r.value))}</td>
+                <td class="num">${fmtQty(r.movements)}</td></tr>`).join('')}
+            </tbody>
+          </table>
+        </div></div>`;
+    } else {
+      body.innerHTML = `
+        <div class="card" style="margin-bottom:16px"><div class="card-head">Totals by product</div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>SKU</th><th>Product</th><th class="num">Qty</th>
+              <th class="num">Value</th><th class="num">Movements</th></tr></thead>
+            <tbody>${d.totals.map((t) => `
+              <tr><td class="mono">${esc(t.sku)}</td><td class="wrap">${esc(t.name)}</td>
+                <td class="num">${fmtQty(t.qty)} ${esc(t.unit)}</td>
+                <td class="num">${esc(fmtMoney(t.value))}</td>
+                <td class="num">${fmtQty(t.movements)}</td></tr>`).join('')}
+            </tbody>
+          </table></div>
+        </div>
+        <div class="card"><div class="card-head">Detailed breakdown</div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>SKU</th><th>Product</th><th>${granularity === 'month' ? 'Month' : 'Date'}</th>
+              <th class="num">Qty</th><th class="num">Value</th></tr></thead>
+            <tbody>${d.rows.map((r) => `
+              <tr><td class="mono">${esc(r.sku)}</td><td class="wrap">${esc(r.name)}</td>
+                <td>${esc(periodLabel(r.period, granularity))}</td>
+                <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td>
+                <td class="num">${esc(fmtMoney(r.value))}</td></tr>`).join('')}
+            </tbody>
+          </table></div>
+        </div>`;
+    }
+  };
+
+  view.querySelector('#f-product').addEventListener('change', load);
+  view.querySelector('#f-loc').addEventListener('change', load);
+  view.querySelector('#f-from').addEventListener('change', load);
+  view.querySelector('#f-to').addEventListener('change', load);
+  view.querySelectorAll('#gran-tabs button').forEach((b) => b.addEventListener('click', () => {
+    granularity = b.dataset.gran;
+    view.querySelectorAll('#gran-tabs button').forEach((x) => x.classList.toggle('active', x === b));
+    load();
+  }));
+
+  view.querySelector('#dl-pdf').addEventListener('click', () => exportConsumptionPdf(lastData, granularity));
+
+  await load();
+}
+
+function exportConsumptionPdf(d, granularity) {
+  if (!d) return toast('Nothing to export yet', 'error');
+  if (!window.jspdf) return toast('PDF library did not load — check your connection', 'error');
+  const { jsPDF } = window.jspdf;
+  const doc = new jsPDF();
+  const isSingle = !!d.product;
+  const title = isSingle ? `Consumption — ${d.product.sku} ${d.product.name}` : 'Consumption — All products';
+
+  doc.setFontSize(14);
+  doc.text('A.N Traders', 14, 16);
+  doc.setFontSize(11);
+  doc.text(title, 14, 24);
+  doc.setFontSize(9);
+  doc.setTextColor(120);
+  doc.text(
+    `${fmtDate(d.from)} to ${fmtDate(d.to)}  ·  ${granularity === 'month' ? 'Monthly' : 'Daily'}  ·  Generated ${fmtDateTime(new Date().toISOString())}`,
+    14, 30
+  );
+  doc.setTextColor(0);
+
+  let y = 36;
+  if (!isSingle) {
+    doc.autoTable({
+      startY: y,
+      head: [['SKU', 'Product', 'Qty', 'Value', 'Movements']],
+      body: d.totals.map((t) => [t.sku, t.name, `${fmtQty(t.qty)} ${t.unit}`, fmtMoney(t.value), String(t.movements)]),
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [15, 92, 74] },
+    });
+    y = doc.lastAutoTable.finalY + 10;
+    doc.setFontSize(10);
+    doc.text('Detailed breakdown', 14, y);
+    y += 4;
+  }
+
+  doc.autoTable({
+    startY: y,
+    head: isSingle
+      ? [[granularity === 'month' ? 'Month' : 'Date', 'Qty', 'Value', 'Movements']]
+      : [['SKU', 'Product', granularity === 'month' ? 'Month' : 'Date', 'Qty', 'Value']],
+    body: isSingle
+      ? d.rows.map((r) => [periodLabel(r.period, granularity), `${fmtQty(r.qty)} ${r.unit}`, fmtMoney(r.value), String(r.movements)])
+      : d.rows.map((r) => [r.sku, r.name, periodLabel(r.period, granularity), `${fmtQty(r.qty)} ${r.unit}`, fmtMoney(r.value)]),
+    styles: { fontSize: 8 },
+    headStyles: { fillColor: [15, 92, 74] },
+  });
+
+  const fname = `consumption-${isSingle ? d.product.sku : 'all-products'}-${d.from}_to_${d.to}.pdf`.replace(/[^A-Za-z0-9._-]+/g, '-');
+  doc.save(fname);
+}
+
 // ------------------------------------------------------------ products
 
 async function viewProducts(view) {
@@ -1361,6 +1569,7 @@ function openUserModal(u) {
 const MODULE_LABEL = {
   dashboard: 'Dashboard', stock: 'Stock', movements: 'Movements',
   batches: 'Batches', counts: 'Stock counts', products: 'Products',
+  consumption: 'Consumption',
 };
 
 async function viewPermissions(view) {
