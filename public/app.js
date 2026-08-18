@@ -221,12 +221,19 @@ document.getElementById('menu-toggle').addEventListener('click', () => {
 
 // ------------------------------------------------------------ boot + router
 
+function syncNav() {
+  document.querySelectorAll('.sidenav a').forEach((a) => {
+    a.classList.toggle('hidden', !mayOpen(a.dataset.nav));
+  });
+}
+
 async function boot() {
   const data = await api('/api/bootstrap');
   S.user = data.user;
   S.locations = data.locations;
   S.categories = data.categories;
   S.visibleLocations = data.visible_location_ids;
+  S.permissions = data.permissions;
 
   document.getElementById('login').classList.add('hidden');
   document.getElementById('app').classList.remove('hidden');
@@ -235,9 +242,7 @@ async function boot() {
   document.getElementById('user-chip').textContent =
     `${S.user.name} · ${roleLabel}${S.user.location_name ? ' · ' + S.user.location_name : ''}`;
 
-  document.querySelectorAll('.sidenav a').forEach((a) => {
-    a.classList.toggle('hidden', !mayOpen(a.dataset.nav));
-  });
+  syncNav();
 
   await refreshProducts();
   const wanted = currentRoute();
@@ -260,28 +265,31 @@ const VIEWS = {
   products: viewProducts,
   locations: viewLocations,
   users: viewUsers,
+  permissions: viewPermissions,
 };
 
-// Which roles may open each section. Drives the sidebar and guards typed URLs.
-// The server enforces the same rules — this is convenience, not security.
-const NAV_ROLES = {
-  dashboard: ['admin', 'manager'],
-  stock:     ['admin', 'manager', 'staff'],
-  movements: ['admin', 'manager', 'staff'],
-  batches:   ['admin', 'manager'],
-  counts:    ['admin', 'manager', 'staff'],
-  products:  ['admin', 'manager'],
-  locations: ['admin'],
-  users:     ['admin'],
-};
+// Which sections a manager/staff login can see is configurable from the
+// Permissions page (admin only) rather than hardcoded. locations/users/
+// permissions stay admin-only always -- those are account administration,
+// not something to hand out per section. The server enforces the same
+// permission table for dashboard/batches/counts; this is convenience for
+// everything else, not the security boundary.
+const ADMIN_ONLY_NAV = ['locations', 'users', 'permissions'];
+const CONFIGURABLE_MODULES = ['dashboard', 'stock', 'movements', 'batches', 'counts', 'products'];
 
 function mayOpen(name) {
-  const roles = NAV_ROLES[name];
-  return !!roles && !!S.user && roles.includes(S.user.role);
+  if (!S.user) return false;
+  if (S.user.role === 'admin') return true;
+  if (ADMIN_ONLY_NAV.includes(name)) return false;
+  if (CONFIGURABLE_MODULES.includes(name)) {
+    const forRole = S.permissions && S.permissions[S.user.role];
+    return forRole ? forRole[name] !== false : true;
+  }
+  return false;
 }
 
 function homeView() {
-  return Object.keys(NAV_ROLES).find(mayOpen) || 'stock';
+  return Object.keys(VIEWS).find(mayOpen) || 'stock';
 }
 
 function currentRoute() {
@@ -1345,6 +1353,60 @@ function openUserModal(u) {
       toast(isNew ? 'User created' : 'User updated', 'success');
       render();
     } catch (ex) { modalError(ex.message); }
+  });
+}
+
+// ------------------------------------------------------------ permissions
+
+const MODULE_LABEL = {
+  dashboard: 'Dashboard', stock: 'Stock', movements: 'Movements',
+  batches: 'Batches', counts: 'Stock counts', products: 'Products',
+};
+
+async function viewPermissions(view) {
+  const d = await api('/api/permissions');
+  const cell = (role, module) => d.matrix[role][module];
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h2>Permissions</h2>
+        <p class="page-sub">Choose which sections Managers and Staff can see. Administrators always see everything.</p></div>
+    </div>
+    <div class="card"><div class="table-wrap">
+      <table>
+        <thead><tr><th>Section</th><th class="num">Manager</th><th class="num">Staff</th></tr></thead>
+        <tbody>${d.modules.map((m) => `
+          <tr>
+            <td>${esc(MODULE_LABEL[m] || m)}</td>
+            ${d.roles.map((r) => `
+              <td class="num"><input type="checkbox" data-role="${r}" data-module="${m}" ${cell(r, m) ? 'checked' : ''}></td>`).join('')}
+          </tr>`).join('')}
+        </tbody>
+      </table>
+    </div></div>
+    <div class="page-head" style="margin-top:16px">
+      <div class="spacer"></div>
+      <button class="btn primary" id="perm-save">Save changes</button>
+    </div>`;
+
+  view.querySelector('#perm-save').addEventListener('click', async () => {
+    const btn = view.querySelector('#perm-save');
+    const rows = Array.from(view.querySelectorAll('input[data-role]')).map((cb) => ({
+      role: cb.dataset.role,
+      module: cb.dataset.module,
+      allowed: cb.checked,
+    }));
+    btn.disabled = true;
+    try {
+      const r = await api('/api/permissions', { method: 'PUT', body: JSON.stringify({ rows }) });
+      S.permissions = r.matrix;
+      syncNav();
+      toast('Permissions updated', 'success');
+    } catch (ex) {
+      toast(ex.message, 'error');
+    } finally {
+      btn.disabled = false;
+    }
   });
 }
 
