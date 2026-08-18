@@ -1070,6 +1070,9 @@ async function viewConsumption(view) {
   let lastData = null;
 
   const load = async () => {
+    const isSingle = view.querySelector('#f-product').value !== 'all';
+    view.querySelector('#gran-tabs').classList.toggle('hidden', isSingle);
+
     const params = new URLSearchParams({
       product: view.querySelector('#f-product').value,
       location: view.querySelector('#f-loc').value,
@@ -1092,15 +1095,11 @@ async function viewConsumption(view) {
     }
     lastData = d;
 
-    const isSingle = !!d.product;
     summary.innerHTML = `
-      <div class="card stat"><div class="label">Total value</div>
-        <div class="value">${esc(fmtMoney(d.grand_total.value))}</div>
-        <div class="foot">${fmtDate(d.from)} – ${fmtDate(d.to)}</div></div>
       <div class="card stat"><div class="label">Movements</div>
         <div class="value">${fmtQty(d.grand_total.movements)}</div>
-        <div class="foot">issue movements in range</div></div>
-      ${isSingle ? `
+        <div class="foot">${fmtDate(d.from)} – ${fmtDate(d.to)}</div></div>
+      ${d.product ? `
         <div class="card stat"><div class="label">Total quantity</div>
           <div class="value">${fmtQty(d.totals[0] ? d.totals[0].qty : 0)}</div>
           <div class="foot">${esc(d.product.unit)}</div></div>
@@ -1113,35 +1112,39 @@ async function viewConsumption(view) {
           <div class="foot">of ${fmtQty(S.products.length)} total</div></div>`}
     `;
 
-    if (!d.rows.length) {
-      body.innerHTML = '<div class="card"><div class="empty">No consumption recorded in this range.</div></div>';
-      return;
-    }
-
-    if (isSingle) {
+    if (d.product) {
+      if (!d.movements.length) {
+        body.innerHTML = '<div class="card"><div class="empty">No consumption recorded in this range.</div></div>';
+        return;
+      }
       body.innerHTML = `
         <div class="card"><div class="table-wrap">
           <table>
-            <thead><tr><th>${granularity === 'month' ? 'Month' : 'Date'}</th>
-              <th class="num">Qty</th><th class="num">Value</th><th class="num">Movements</th></tr></thead>
-            <tbody>${d.rows.map((r) => `
-              <tr><td>${esc(periodLabel(r.period, granularity))}</td>
-                <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td>
-                <td class="num">${esc(fmtMoney(r.value))}</td>
-                <td class="num">${fmtQty(r.movements)}</td></tr>`).join('')}
+            <thead><tr><th>Date</th><th>From</th><th class="num">Qty</th>
+              <th>Party</th><th>Reference</th><th>By</th></tr></thead>
+            <tbody>${d.movements.map((m) => `
+              <tr><td style="white-space:normal">${fmtDateTime(m.ts)}</td>
+                <td class="wrap">${esc(m.from_name || '—')}</td>
+                <td class="num">${m.entry_unit ? `${fmtQty(m.entry_qty)} ${esc(m.entry_unit)}` : `${fmtQty(m.qty)} ${esc(d.product.unit)}`}</td>
+                <td class="wrap">${esc(m.party || '—')}</td>
+                <td class="wrap">${esc(m.reference || '—')}</td>
+                <td style="color:var(--muted)">${esc(m.user_name || '—')}</td></tr>`).join('')}
             </tbody>
           </table>
         </div></div>`;
     } else {
+      if (!d.rows.length) {
+        body.innerHTML = '<div class="card"><div class="empty">No consumption recorded in this range.</div></div>';
+        return;
+      }
       body.innerHTML = `
         <div class="card" style="margin-bottom:16px"><div class="card-head">Totals by product</div>
           <div class="table-wrap"><table>
             <thead><tr><th>SKU</th><th>Product</th><th class="num">Qty</th>
-              <th class="num">Value</th><th class="num">Movements</th></tr></thead>
+              <th class="num">Movements</th></tr></thead>
             <tbody>${d.totals.map((t) => `
               <tr><td class="mono">${esc(t.sku)}</td><td class="wrap">${esc(t.name)}</td>
                 <td class="num">${fmtQty(t.qty)} ${esc(t.unit)}</td>
-                <td class="num">${esc(fmtMoney(t.value))}</td>
                 <td class="num">${fmtQty(t.movements)}</td></tr>`).join('')}
             </tbody>
           </table></div>
@@ -1149,12 +1152,11 @@ async function viewConsumption(view) {
         <div class="card"><div class="card-head">Detailed breakdown</div>
           <div class="table-wrap"><table>
             <thead><tr><th>SKU</th><th>Product</th><th>${granularity === 'month' ? 'Month' : 'Date'}</th>
-              <th class="num">Qty</th><th class="num">Value</th></tr></thead>
+              <th class="num">Qty</th></tr></thead>
             <tbody>${d.rows.map((r) => `
               <tr><td class="mono">${esc(r.sku)}</td><td class="wrap">${esc(r.name)}</td>
                 <td>${esc(periodLabel(r.period, granularity))}</td>
-                <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td>
-                <td class="num">${esc(fmtMoney(r.value))}</td></tr>`).join('')}
+                <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td></tr>`).join('')}
             </tbody>
           </table></div>
         </div>`;
@@ -1191,17 +1193,38 @@ function exportConsumptionPdf(d, granularity) {
   doc.setFontSize(9);
   doc.setTextColor(120);
   doc.text(
-    `${fmtDate(d.from)} to ${fmtDate(d.to)}  ·  ${granularity === 'month' ? 'Monthly' : 'Daily'}  ·  Generated ${fmtDateTime(new Date().toISOString())}`,
+    isSingle
+      ? `${fmtDate(d.from)} to ${fmtDate(d.to)}  ·  Generated ${fmtDateTime(new Date().toISOString())}`
+      : `${fmtDate(d.from)} to ${fmtDate(d.to)}  ·  ${granularity === 'month' ? 'Monthly' : 'Daily'}  ·  Generated ${fmtDateTime(new Date().toISOString())}`,
     14, 30
   );
   doc.setTextColor(0);
 
   let y = 36;
-  if (!isSingle) {
+
+  if (isSingle) {
+    // The whole point of a single-product export is to see exactly what
+    // happened, so this lists every individual issue movement rather than
+    // a day/month roll-up.
     doc.autoTable({
       startY: y,
-      head: [['SKU', 'Product', 'Qty', 'Value', 'Movements']],
-      body: d.totals.map((t) => [t.sku, t.name, `${fmtQty(t.qty)} ${t.unit}`, fmtMoney(t.value), String(t.movements)]),
+      head: [['Date', 'From', 'Qty', 'Party', 'Reference', 'By']],
+      body: d.movements.map((m) => [
+        fmtDateTime(m.ts),
+        m.from_name || '—',
+        m.entry_unit ? `${fmtQty(m.entry_qty)} ${m.entry_unit}` : `${fmtQty(m.qty)} ${d.product.unit}`,
+        m.party || '—',
+        m.reference || '—',
+        m.user_name || '—',
+      ]),
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [15, 92, 74] },
+    });
+  } else {
+    doc.autoTable({
+      startY: y,
+      head: [['SKU', 'Product', 'Qty', 'Movements']],
+      body: d.totals.map((t) => [t.sku, t.name, `${fmtQty(t.qty)} ${t.unit}`, String(t.movements)]),
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
     });
@@ -1209,19 +1232,15 @@ function exportConsumptionPdf(d, granularity) {
     doc.setFontSize(10);
     doc.text('Detailed breakdown', 14, y);
     y += 4;
-  }
 
-  doc.autoTable({
-    startY: y,
-    head: isSingle
-      ? [[granularity === 'month' ? 'Month' : 'Date', 'Qty', 'Value', 'Movements']]
-      : [['SKU', 'Product', granularity === 'month' ? 'Month' : 'Date', 'Qty', 'Value']],
-    body: isSingle
-      ? d.rows.map((r) => [periodLabel(r.period, granularity), `${fmtQty(r.qty)} ${r.unit}`, fmtMoney(r.value), String(r.movements)])
-      : d.rows.map((r) => [r.sku, r.name, periodLabel(r.period, granularity), `${fmtQty(r.qty)} ${r.unit}`, fmtMoney(r.value)]),
-    styles: { fontSize: 8 },
-    headStyles: { fillColor: [15, 92, 74] },
-  });
+    doc.autoTable({
+      startY: y,
+      head: [['SKU', 'Product', granularity === 'month' ? 'Month' : 'Date', 'Qty']],
+      body: d.rows.map((r) => [r.sku, r.name, periodLabel(r.period, granularity), `${fmtQty(r.qty)} ${r.unit}`]),
+      styles: { fontSize: 8 },
+      headStyles: { fillColor: [15, 92, 74] },
+    });
+  }
 
   const fname = `consumption-${isSingle ? d.product.sku : 'all-products'}-${d.from}_to_${d.to}.pdf`.replace(/[^A-Za-z0-9._-]+/g, '-');
   doc.save(fname);
