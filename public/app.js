@@ -340,6 +340,7 @@ window.addEventListener('hashchange', render);
 async function viewDashboard(view, isCurrent) {
   const d = await api('/api/dashboard');
   if (!isCurrent()) return;
+  const canSeeValue = S.user.role !== 'staff';
 
   view.innerHTML = `
     <div class="page-head">
@@ -354,9 +355,10 @@ async function viewDashboard(view, isCurrent) {
     <div class="grid stats" style="margin-bottom:16px">
       <div class="card stat"><div class="label">Active products</div>
         <div class="value">${fmtQty(d.product_count)}</div></div>
+      ${canSeeValue ? `
       <div class="card stat"><div class="label">Stock value</div>
         <div class="value">${esc(fmtMoney(d.stock_value))}</div>
-        <div class="foot">at cost price</div></div>
+        <div class="foot">at cost price</div></div>` : ''}
       <div class="card stat"><div class="label">Low stock</div>
         <div class="value ${d.low_stock_count ? 'danger' : ''}">${fmtQty(d.low_stock_count)}</div>
         <div class="foot">at or below reorder level</div></div>
@@ -409,6 +411,7 @@ async function viewDashboard(view, isCurrent) {
 
 async function viewStock(view) {
   const locs = viewableLocations();
+  const canSeeValue = S.user.role !== 'staff';
   view.innerHTML = `
     <div class="page-head">
       <div><h2>Stock on hand</h2>
@@ -446,7 +449,7 @@ async function viewStock(view) {
         <thead><tr>
           <th>SKU</th><th>Product</th><th>Category</th>
           ${showCols.map((l) => `<th class="num" title="${esc(l.name)}">${esc(l.name)}</th>`).join('')}
-          <th class="num">Total</th><th class="num">Reorder</th><th></th><th class="num">Value</th>
+          <th class="num">Total</th><th class="num">Reorder</th><th></th>${canSeeValue ? '<th class="num">Value</th>' : ''}
         </tr></thead>
         <tbody>${d.rows.map((r) => {
           const low = r.reorder_level > 0 && r.total_qty <= r.reorder_level;
@@ -458,7 +461,7 @@ async function viewStock(view) {
             <td class="num"><strong>${fmtQty(r.total_qty)}</strong> <span style="color:var(--muted)">${esc(r.unit)}</span></td>
             <td class="num" style="color:var(--muted)">${r.reorder_level ? fmtQty(r.reorder_level) : '—'}</td>
             <td>${low ? '<span class="pill low">Reorder</span>' : '<span class="pill ok">OK</span>'}</td>
-            <td class="num">${esc(fmtMoney(r.total_qty * r.cost_price))}</td>
+            ${canSeeValue ? `<td class="num">${esc(fmtMoney(r.total_qty * r.cost_price))}</td>` : ''}
           </tr>`;
         }).join('')}</tbody>
       </table>`;
@@ -1099,6 +1102,7 @@ function consumptionDefaultFrom() {
 
 async function viewConsumption(view) {
   const locs = viewableLocations();
+  const canSeeValue = S.user.role !== 'staff';
 
   view.innerHTML = `
     <div class="page-head">
@@ -1172,9 +1176,10 @@ async function viewConsumption(view) {
       <div class="card stat"><div class="label">Closing stock</div>
         <div class="value" style="font-size:16px">${esc(closingLine) || '0'}</div>
         <div class="foot">as of ${fmtDate(d.to)}</div></div>
+      ${canSeeValue ? `
       <div class="card stat"><div class="label">Total value</div>
         <div class="value">${esc(fmtMoney(d.grand_total.value))}</div>
-        <div class="foot">${fmtDate(d.from)} – ${fmtDate(d.to)}</div></div>
+        <div class="foot">${fmtDate(d.from)} – ${fmtDate(d.to)}</div></div>` : ''}
       <div class="card stat"><div class="label">Movements</div>
         <div class="value">${fmtQty(d.grand_total.movements)}</div>
         <div class="foot">issue movements in range</div></div>
@@ -1205,13 +1210,13 @@ async function viewConsumption(view) {
         <div class="card" style="margin-bottom:16px"><div class="card-head">Opening &amp; closing stock <span style="font-weight:500;color:var(--muted)">— ${granLabel}, ${esc(fmtDate(d.from))} to ${esc(fmtDate(d.to))}</span></div>
           <div class="table-wrap"><table>
             <thead><tr><th>${periodHead}</th><th class="num">Opening stock</th><th class="num">Consumed</th>
-              <th class="num">Closing stock</th><th class="num">Value</th><th class="num">Movements</th></tr></thead>
+              <th class="num">Closing stock</th>${canSeeValue ? '<th class="num">Value</th>' : ''}<th class="num">Movements</th></tr></thead>
             <tbody>${d.rows.map((r) => `
               <tr><td>${esc(periodLabel(r.period, granularity))}</td>
                 <td class="num">${fmtQty(r.opening_stock)} ${esc(r.unit)}</td>
                 <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td>
                 <td class="num">${fmtQty(r.closing_stock)} ${esc(r.unit)}</td>
-                <td class="num">${esc(fmtMoney(r.value))}</td>
+                ${canSeeValue ? `<td class="num">${esc(fmtMoney(r.value))}</td>` : ''}
                 <td class="num">${fmtQty(r.movements)}</td></tr>`).join('')}
             </tbody>
             <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
@@ -1219,7 +1224,7 @@ async function viewConsumption(view) {
               <td class="num">${fmtQty(d.rows[0].opening_stock)} ${esc(d.rows[0].unit)}</td>
               <td class="num">${esc(rowsQtyLine)}</td>
               <td class="num">${fmtQty(d.rows[d.rows.length - 1].closing_stock)} ${esc(d.rows[d.rows.length - 1].unit)}</td>
-              <td class="num">${esc(fmtMoney(rowsValueSum))}</td>
+              ${canSeeValue ? `<td class="num">${esc(fmtMoney(rowsValueSum))}</td>` : ''}
               <td class="num">${fmtQty(d.grand_total.movements)}</td></tr></tfoot>
           </table></div>
         </div>` : '';
@@ -1233,13 +1238,13 @@ async function viewConsumption(view) {
       body.innerHTML = periodTable + `
         <div class="card"><div class="card-head">Individual movements</div><div class="table-wrap">
           <table>
-            <thead><tr><th>Date</th><th>From</th><th class="num">Qty</th><th class="num">Value</th>
+            <thead><tr><th>Date</th><th>From</th><th class="num">Qty</th>${canSeeValue ? '<th class="num">Value</th>' : ''}
               <th>Party</th><th>Reference</th><th>By</th></tr></thead>
             <tbody>${d.movements.map((m) => `
               <tr><td style="white-space:normal">${fmtDateTime(m.ts)}</td>
                 <td class="wrap">${esc(m.from_name || '—')}</td>
                 <td class="num">${m.entry_unit ? `${fmtQty(m.entry_qty)} ${esc(m.entry_unit)}` : `${fmtQty(m.qty)} ${esc(d.product.unit)}`}</td>
-                <td class="num">${esc(fmtMoney(m.value))}</td>
+                ${canSeeValue ? `<td class="num">${esc(fmtMoney(m.value))}</td>` : ''}
                 <td class="wrap">${esc(m.party || '—')}</td>
                 <td class="wrap">${esc(m.reference || '—')}</td>
                 <td style="color:var(--muted)">${esc(m.user_name || '—')}</td></tr>`).join('')}
@@ -1247,7 +1252,7 @@ async function viewConsumption(view) {
             <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
               <td colspan="2">Total</td>
               <td class="num">${fmtQty(singleTotalQty)} ${esc(d.product.unit)}</td>
-              <td class="num">${esc(fmtMoney(singleTotalValue))}</td>
+              ${canSeeValue ? `<td class="num">${esc(fmtMoney(singleTotalValue))}</td>` : ''}
               <td colspan="3"></td></tr></tfoot>
           </table>
         </div></div>`;
@@ -1264,13 +1269,13 @@ async function viewConsumption(view) {
         <div class="card" style="margin-bottom:16px"><div class="card-head">Totals by product <span style="font-weight:500;color:var(--muted)">— opening stock as of ${esc(fmtDate(d.from))}, closing as of ${esc(fmtDate(d.to))}</span></div>
           <div class="table-wrap"><table>
             <thead><tr><th>SKU</th><th>Product</th><th class="num">Opening stock</th><th class="num">Consumed</th>
-              <th class="num">Closing stock</th><th class="num">Value</th><th class="num">Movements</th></tr></thead>
+              <th class="num">Closing stock</th>${canSeeValue ? '<th class="num">Value</th>' : ''}<th class="num">Movements</th></tr></thead>
             <tbody>${d.totals.map((t) => `
               <tr><td class="mono">${esc(t.sku)}</td><td class="wrap">${esc(t.name)}</td>
                 <td class="num">${fmtQty(t.opening_stock)} ${esc(t.unit)}</td>
                 <td class="num">${fmtQty(t.qty)} ${esc(t.unit)}</td>
                 <td class="num">${fmtQty(t.closing_stock)} ${esc(t.unit)}</td>
-                <td class="num">${esc(fmtMoney(t.value))}</td>
+                ${canSeeValue ? `<td class="num">${esc(fmtMoney(t.value))}</td>` : ''}
                 <td class="num">${fmtQty(t.movements)}</td></tr>`).join('')}
             </tbody>
             <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
@@ -1278,28 +1283,28 @@ async function viewConsumption(view) {
               <td class="num">${esc(totalsOpeningLine)}</td>
               <td class="num">${esc(totalsQtyLine)}</td>
               <td class="num">${esc(totalsClosingLine)}</td>
-              <td class="num">${esc(fmtMoney(d.grand_total.value))}</td>
+              ${canSeeValue ? `<td class="num">${esc(fmtMoney(d.grand_total.value))}</td>` : ''}
               <td class="num">${fmtQty(d.grand_total.movements)}</td></tr></tfoot>
           </table></div>
         </div>
         <div class="card"><div class="card-head">Detailed breakdown <span style="font-weight:500;color:var(--muted)">— ${granLabel} consumption, ${esc(fmtDate(d.from))} to ${esc(fmtDate(d.to))}</span></div>
           <div class="table-wrap"><table>
             <thead><tr><th>SKU</th><th>Product</th><th>${periodHead}</th>
-              <th class="num">Opening stock</th><th class="num">Consumed</th><th class="num">Closing stock</th><th class="num">Value</th></tr></thead>
+              <th class="num">Opening stock</th><th class="num">Consumed</th><th class="num">Closing stock</th>${canSeeValue ? '<th class="num">Value</th>' : ''}</tr></thead>
             <tbody>${d.rows.map((r) => `
               <tr><td class="mono">${esc(r.sku)}</td><td class="wrap">${esc(r.name)}</td>
                 <td>${esc(periodLabel(r.period, granularity))}</td>
                 <td class="num">${fmtQty(r.opening_stock)} ${esc(r.unit)}</td>
                 <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td>
                 <td class="num">${fmtQty(r.closing_stock)} ${esc(r.unit)}</td>
-                <td class="num">${esc(fmtMoney(r.value))}</td></tr>`).join('')}
+                ${canSeeValue ? `<td class="num">${esc(fmtMoney(r.value))}</td>` : ''}</tr>`).join('')}
             </tbody>
             <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
               <td colspan="3">Total</td>
               <td></td>
               <td class="num">${esc(rowsQtyLine)}</td>
               <td></td>
-              <td class="num">${esc(fmtMoney(d.grand_total.value))}</td></tr></tfoot>
+              ${canSeeValue ? `<td class="num">${esc(fmtMoney(d.grand_total.value))}</td>` : ''}</tr></tfoot>
           </table></div>
         </div>`;
     }
@@ -1323,6 +1328,7 @@ async function viewConsumption(view) {
 function exportConsumptionPdf(d, granularity) {
   if (!d) return toast('Nothing to export yet', 'error');
   if (!window.jspdf) return toast('PDF library did not load — check your connection', 'error');
+  const canSeeValue = S.user.role !== 'staff';
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
   const isSingle = !!d.product;
@@ -1349,13 +1355,13 @@ function exportConsumptionPdf(d, granularity) {
     if (d.rows.length) {
       doc.autoTable({
         startY: y,
-        head: [[periodHead, 'Opening stock', 'Consumed', 'Closing stock', 'Value', 'Movements']],
+        head: [[periodHead, 'Opening stock', 'Consumed', 'Closing stock', ...(canSeeValue ? ['Value'] : []), 'Movements']],
         body: d.rows.map((r) => [
           periodLabel(r.period, granularity),
           `${fmtQty(r.opening_stock)} ${r.unit}`,
           `${fmtQty(r.qty)} ${r.unit}`,
           `${fmtQty(r.closing_stock)} ${r.unit}`,
-          fmtMoney(r.value),
+          ...(canSeeValue ? [fmtMoney(r.value)] : []),
           String(r.movements),
         ]),
         foot: [[
@@ -1363,7 +1369,7 @@ function exportConsumptionPdf(d, granularity) {
           `${fmtQty(d.rows[0].opening_stock)} ${d.rows[0].unit}`,
           sumByUnit(d.rows, 'qty', 'unit'),
           `${fmtQty(d.rows[d.rows.length - 1].closing_stock)} ${d.rows[d.rows.length - 1].unit}`,
-          fmtMoney(d.rows.reduce((s, r) => s + r.value, 0)),
+          ...(canSeeValue ? [fmtMoney(d.rows.reduce((s, r) => s + r.value, 0))] : []),
           String(d.grand_total.movements),
         ]],
         styles: { fontSize: 8 },
@@ -1384,17 +1390,17 @@ function exportConsumptionPdf(d, granularity) {
       const singleTotalQty = d.movements.reduce((s, m) => s + m.qty, 0);
       doc.autoTable({
         startY: y,
-        head: [['Date', 'From', 'Qty', 'Value', 'Party', 'Reference', 'By']],
+        head: [['Date', 'From', 'Qty', ...(canSeeValue ? ['Value'] : []), 'Party', 'Reference', 'By']],
         body: d.movements.map((m) => [
           fmtDateTime(m.ts),
           m.from_name || '—',
           m.entry_unit ? `${fmtQty(m.entry_qty)} ${m.entry_unit}` : `${fmtQty(m.qty)} ${d.product.unit}`,
-          fmtMoney(m.value),
+          ...(canSeeValue ? [fmtMoney(m.value)] : []),
           m.party || '—',
           m.reference || '—',
           m.user_name || '—',
         ]),
-        foot: [['Total', '', `${fmtQty(singleTotalQty)} ${d.product.unit}`, fmtMoney(d.grand_total.value), '', '', '']],
+        foot: [['Total', '', `${fmtQty(singleTotalQty)} ${d.product.unit}`, ...(canSeeValue ? [fmtMoney(d.grand_total.value)] : []), '', '', '']],
         styles: { fontSize: 8 },
         headStyles: { fillColor: [15, 92, 74] },
         footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
@@ -1403,13 +1409,13 @@ function exportConsumptionPdf(d, granularity) {
   } else {
     doc.autoTable({
       startY: y,
-      head: [['SKU', 'Product', 'Opening stock', 'Consumed', 'Closing stock', 'Value', 'Movements']],
+      head: [['SKU', 'Product', 'Opening stock', 'Consumed', 'Closing stock', ...(canSeeValue ? ['Value'] : []), 'Movements']],
       body: d.totals.map((t) => [
         t.sku, t.name,
         `${fmtQty(t.opening_stock)} ${t.unit}`,
         `${fmtQty(t.qty)} ${t.unit}`,
         `${fmtQty(t.closing_stock)} ${t.unit}`,
-        fmtMoney(t.value),
+        ...(canSeeValue ? [fmtMoney(t.value)] : []),
         String(t.movements),
       ]),
       foot: [[
@@ -1417,7 +1423,7 @@ function exportConsumptionPdf(d, granularity) {
         sumByUnit(d.totals, 'opening_stock', 'unit'),
         sumByUnit(d.totals, 'qty', 'unit'),
         sumByUnit(d.totals, 'closing_stock', 'unit'),
-        fmtMoney(d.grand_total.value),
+        ...(canSeeValue ? [fmtMoney(d.grand_total.value)] : []),
         String(d.grand_total.movements),
       ]],
       styles: { fontSize: 8 },
@@ -1432,15 +1438,15 @@ function exportConsumptionPdf(d, granularity) {
 
     doc.autoTable({
       startY: y,
-      head: [['SKU', 'Product', periodHead, 'Opening stock', 'Consumed', 'Closing stock', 'Value']],
+      head: [['SKU', 'Product', periodHead, 'Opening stock', 'Consumed', 'Closing stock', ...(canSeeValue ? ['Value'] : [])]],
       body: d.rows.map((r) => [
         r.sku, r.name, periodLabel(r.period, granularity),
         `${fmtQty(r.opening_stock)} ${r.unit}`,
         `${fmtQty(r.qty)} ${r.unit}`,
         `${fmtQty(r.closing_stock)} ${r.unit}`,
-        fmtMoney(r.value),
+        ...(canSeeValue ? [fmtMoney(r.value)] : []),
       ]),
-      foot: [['Total', '', '', '', sumByUnit(d.rows, 'qty', 'unit'), '', fmtMoney(d.grand_total.value)]],
+      foot: [['Total', '', '', '', sumByUnit(d.rows, 'qty', 'unit'), '', ...(canSeeValue ? [fmtMoney(d.grand_total.value)] : [])]],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
       footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
@@ -1457,6 +1463,7 @@ async function viewProducts(view, isCurrent) {
   await refreshProducts();
   if (!isCurrent()) return;
   const canEdit = S.user.role === 'admin' || S.user.role === 'manager';
+  const canSeeValue = S.user.role !== 'staff';
 
   view.innerHTML = `
     <div class="page-head">
@@ -1483,7 +1490,7 @@ async function viewProducts(view, isCurrent) {
     box.innerHTML = `
       <table>
         <thead><tr><th>SKU</th><th>Product</th><th>Category</th><th>Unit</th><th>Pack</th>
-          <th class="num">Reorder</th><th class="num">Cost</th><th class="num">Sale</th>
+          <th class="num">Reorder</th>${canSeeValue ? '<th class="num">Cost</th><th class="num">Sale</th>' : ''}
           ${canEdit ? '<th></th>' : ''}</tr></thead>
         <tbody>${rows.map((p) => `
           <tr>
@@ -1494,8 +1501,8 @@ async function viewProducts(view, isCurrent) {
               ? `<div class="hint">entered in ${esc(p.entry_unit)}</div>` : ''}</td>
             <td>${esc(p.pack_size || '—')}</td>
             <td class="num">${p.reorder_level ? fmtQty(p.reorder_level) : '—'}</td>
-            <td class="num">${esc(fmtMoney(p.cost_price))}</td>
-            <td class="num">${esc(fmtMoney(p.sale_price))}</td>
+            ${canSeeValue ? `<td class="num">${esc(fmtMoney(p.cost_price))}</td>
+            <td class="num">${esc(fmtMoney(p.sale_price))}</td>` : ''}
             ${canEdit ? `<td><button class="btn small" data-edit="${p.id}">Edit</button></td>` : ''}
           </tr>`).join('')}
         </tbody>
