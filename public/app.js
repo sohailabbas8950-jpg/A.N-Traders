@@ -1079,9 +1079,6 @@ async function viewConsumption(view) {
   let lastData = null;
 
   const load = async () => {
-    const isSingle = view.querySelector('#f-product').value !== 'all';
-    view.querySelector('#gran-tabs').classList.toggle('hidden', isSingle);
-
     const params = new URLSearchParams({
       product: view.querySelector('#f-product').value,
       location: view.querySelector('#f-loc').value,
@@ -1104,7 +1101,26 @@ async function viewConsumption(view) {
     }
     lastData = d;
 
+    // Opening/closing stock is looked back from the full movement ledger
+    // (every receive/issue/transfer/adjust, at every location the report
+    // covers), not just the 'issue' rows this report otherwise totals --
+    // and it isn't bounded by the report's own "From" filter, since stock a
+    // product already had before the report window still needs to show up
+    // as its opening balance. If a product's true starting stock was never
+    // entered as a movement (e.g. stock on hand before this app was ever
+    // used), it reads as 0 here -- there's no way to compute a quantity
+    // that was never recorded. Logging it as a dated 'receive' (or 'adjust')
+    // will flow through automatically from then on.
+    const openingLine = sumByUnit(d.totals, 'opening_stock', 'unit');
+    const closingLine = sumByUnit(d.totals, 'closing_stock', 'unit');
+
     summary.innerHTML = `
+      <div class="card stat"><div class="label">Opening stock</div>
+        <div class="value" style="font-size:16px">${esc(openingLine) || '0'}</div>
+        <div class="foot">as of ${fmtDate(d.from)}</div></div>
+      <div class="card stat"><div class="label">Closing stock</div>
+        <div class="value" style="font-size:16px">${esc(closingLine) || '0'}</div>
+        <div class="foot">as of ${fmtDate(d.to)}</div></div>
       <div class="card stat"><div class="label">Total value</div>
         <div class="value">${esc(fmtMoney(d.grand_total.value))}</div>
         <div class="foot">${fmtDate(d.from)} – ${fmtDate(d.to)}</div></div>
@@ -1112,7 +1128,7 @@ async function viewConsumption(view) {
         <div class="value">${fmtQty(d.grand_total.movements)}</div>
         <div class="foot">issue movements in range</div></div>
       ${d.product ? `
-        <div class="card stat"><div class="label">Total quantity</div>
+        <div class="card stat"><div class="label">Total quantity consumed</div>
           <div class="value">${fmtQty(d.totals[0] ? d.totals[0].qty : 0)}</div>
           <div class="foot">${esc(d.product.unit)}</div></div>
         <div class="card stat"><div class="label">Product</div>
@@ -1124,15 +1140,47 @@ async function viewConsumption(view) {
           <div class="foot">of ${fmtQty(S.products.length)} total</div></div>`}
     `;
 
+    const granLabel = granularity === 'month' ? 'Monthly' : 'Daily';
+    const periodHead = granularity === 'month' ? 'Month' : 'Date';
+
     if (d.product) {
-      if (!d.movements.length) {
+      if (!d.rows.length && !d.movements.length) {
         body.innerHTML = '<div class="card"><div class="empty">No consumption recorded in this range.</div></div>';
+        return;
+      }
+      const rowsQtyLine = sumByUnit(d.rows, 'qty', 'unit');
+      const rowsValueSum = d.rows.reduce((s, r) => s + r.value, 0);
+      const periodTable = d.rows.length ? `
+        <div class="card" style="margin-bottom:16px"><div class="card-head">Opening &amp; closing stock <span style="font-weight:500;color:var(--muted)">— ${granLabel}, ${esc(fmtDate(d.from))} to ${esc(fmtDate(d.to))}</span></div>
+          <div class="table-wrap"><table>
+            <thead><tr><th>${periodHead}</th><th class="num">Opening stock</th><th class="num">Consumed</th>
+              <th class="num">Closing stock</th><th class="num">Value</th><th class="num">Movements</th></tr></thead>
+            <tbody>${d.rows.map((r) => `
+              <tr><td>${esc(periodLabel(r.period, granularity))}</td>
+                <td class="num">${fmtQty(r.opening_stock)} ${esc(r.unit)}</td>
+                <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td>
+                <td class="num">${fmtQty(r.closing_stock)} ${esc(r.unit)}</td>
+                <td class="num">${esc(fmtMoney(r.value))}</td>
+                <td class="num">${fmtQty(r.movements)}</td></tr>`).join('')}
+            </tbody>
+            <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
+              <td>Total</td>
+              <td class="num">${fmtQty(d.rows[0].opening_stock)} ${esc(d.rows[0].unit)}</td>
+              <td class="num">${esc(rowsQtyLine)}</td>
+              <td class="num">${fmtQty(d.rows[d.rows.length - 1].closing_stock)} ${esc(d.rows[d.rows.length - 1].unit)}</td>
+              <td class="num">${esc(fmtMoney(rowsValueSum))}</td>
+              <td class="num">${fmtQty(d.grand_total.movements)}</td></tr></tfoot>
+          </table></div>
+        </div>` : '';
+
+      if (!d.movements.length) {
+        body.innerHTML = periodTable || '<div class="card"><div class="empty">No consumption recorded in this range.</div></div>';
         return;
       }
       const singleTotalQty = d.movements.reduce((s, m) => s + m.qty, 0);
       const singleTotalValue = d.movements.reduce((s, m) => s + m.value, 0);
-      body.innerHTML = `
-        <div class="card"><div class="table-wrap">
+      body.innerHTML = periodTable + `
+        <div class="card"><div class="card-head">Individual movements</div><div class="table-wrap">
           <table>
             <thead><tr><th>Date</th><th>From</th><th class="num">Qty</th><th class="num">Value</th>
               <th>Party</th><th>Reference</th><th>By</th></tr></thead>
@@ -1158,39 +1206,48 @@ async function viewConsumption(view) {
         return;
       }
       const totalsQtyLine = sumByUnit(d.totals, 'qty', 'unit');
+      const totalsOpeningLine = sumByUnit(d.totals, 'opening_stock', 'unit');
+      const totalsClosingLine = sumByUnit(d.totals, 'closing_stock', 'unit');
       const rowsQtyLine = sumByUnit(d.rows, 'qty', 'unit');
-      const granLabel = granularity === 'month' ? 'Monthly' : 'Daily';
       body.innerHTML = `
-        <div class="card" style="margin-bottom:16px"><div class="card-head">Totals by product</div>
+        <div class="card" style="margin-bottom:16px"><div class="card-head">Totals by product <span style="font-weight:500;color:var(--muted)">— opening stock as of ${esc(fmtDate(d.from))}, closing as of ${esc(fmtDate(d.to))}</span></div>
           <div class="table-wrap"><table>
-            <thead><tr><th>SKU</th><th>Product</th><th class="num">Qty</th>
-              <th class="num">Value</th><th class="num">Movements</th></tr></thead>
+            <thead><tr><th>SKU</th><th>Product</th><th class="num">Opening stock</th><th class="num">Consumed</th>
+              <th class="num">Closing stock</th><th class="num">Value</th><th class="num">Movements</th></tr></thead>
             <tbody>${d.totals.map((t) => `
               <tr><td class="mono">${esc(t.sku)}</td><td class="wrap">${esc(t.name)}</td>
+                <td class="num">${fmtQty(t.opening_stock)} ${esc(t.unit)}</td>
                 <td class="num">${fmtQty(t.qty)} ${esc(t.unit)}</td>
+                <td class="num">${fmtQty(t.closing_stock)} ${esc(t.unit)}</td>
                 <td class="num">${esc(fmtMoney(t.value))}</td>
                 <td class="num">${fmtQty(t.movements)}</td></tr>`).join('')}
             </tbody>
             <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
               <td colspan="2">Total</td>
+              <td class="num">${esc(totalsOpeningLine)}</td>
               <td class="num">${esc(totalsQtyLine)}</td>
+              <td class="num">${esc(totalsClosingLine)}</td>
               <td class="num">${esc(fmtMoney(d.grand_total.value))}</td>
               <td class="num">${fmtQty(d.grand_total.movements)}</td></tr></tfoot>
           </table></div>
         </div>
         <div class="card"><div class="card-head">Detailed breakdown <span style="font-weight:500;color:var(--muted)">— ${granLabel} consumption, ${esc(fmtDate(d.from))} to ${esc(fmtDate(d.to))}</span></div>
           <div class="table-wrap"><table>
-            <thead><tr><th>SKU</th><th>Product</th><th>${granularity === 'month' ? 'Month' : 'Date'}</th>
-              <th class="num">Qty</th><th class="num">Value</th></tr></thead>
+            <thead><tr><th>SKU</th><th>Product</th><th>${periodHead}</th>
+              <th class="num">Opening stock</th><th class="num">Consumed</th><th class="num">Closing stock</th><th class="num">Value</th></tr></thead>
             <tbody>${d.rows.map((r) => `
               <tr><td class="mono">${esc(r.sku)}</td><td class="wrap">${esc(r.name)}</td>
                 <td>${esc(periodLabel(r.period, granularity))}</td>
+                <td class="num">${fmtQty(r.opening_stock)} ${esc(r.unit)}</td>
                 <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td>
+                <td class="num">${fmtQty(r.closing_stock)} ${esc(r.unit)}</td>
                 <td class="num">${esc(fmtMoney(r.value))}</td></tr>`).join('')}
             </tbody>
             <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
               <td colspan="3">Total</td>
+              <td></td>
               <td class="num">${esc(rowsQtyLine)}</td>
+              <td></td>
               <td class="num">${esc(fmtMoney(d.grand_total.value))}</td></tr></tfoot>
           </table></div>
         </div>`;
@@ -1235,35 +1292,83 @@ function exportConsumptionPdf(d, granularity) {
   doc.setTextColor(0);
 
   let y = 36;
+  const periodHead = granularity === 'month' ? 'Month' : 'Date';
 
   if (isSingle) {
-    // The whole point of a single-product export is to see exactly what
-    // happened, so this lists every individual issue movement rather than
-    // a day/month roll-up.
-    const singleTotalQty = d.movements.reduce((s, m) => s + m.qty, 0);
-    doc.autoTable({
-      startY: y,
-      head: [['Date', 'From', 'Qty', 'Value', 'Party', 'Reference', 'By']],
-      body: d.movements.map((m) => [
-        fmtDateTime(m.ts),
-        m.from_name || '—',
-        m.entry_unit ? `${fmtQty(m.entry_qty)} ${m.entry_unit}` : `${fmtQty(m.qty)} ${d.product.unit}`,
-        fmtMoney(m.value),
-        m.party || '—',
-        m.reference || '—',
-        m.user_name || '—',
-      ]),
-      foot: [['Total', '', `${fmtQty(singleTotalQty)} ${d.product.unit}`, fmtMoney(d.grand_total.value), '', '', '']],
-      styles: { fontSize: 8 },
-      headStyles: { fillColor: [15, 92, 74] },
-      footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
-    });
+    if (d.rows.length) {
+      doc.autoTable({
+        startY: y,
+        head: [[periodHead, 'Opening stock', 'Consumed', 'Closing stock', 'Value', 'Movements']],
+        body: d.rows.map((r) => [
+          periodLabel(r.period, granularity),
+          `${fmtQty(r.opening_stock)} ${r.unit}`,
+          `${fmtQty(r.qty)} ${r.unit}`,
+          `${fmtQty(r.closing_stock)} ${r.unit}`,
+          fmtMoney(r.value),
+          String(r.movements),
+        ]),
+        foot: [[
+          'Total',
+          `${fmtQty(d.rows[0].opening_stock)} ${d.rows[0].unit}`,
+          sumByUnit(d.rows, 'qty', 'unit'),
+          `${fmtQty(d.rows[d.rows.length - 1].closing_stock)} ${d.rows[d.rows.length - 1].unit}`,
+          fmtMoney(d.rows.reduce((s, r) => s + r.value, 0)),
+          String(d.grand_total.movements),
+        ]],
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [15, 92, 74] },
+        footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
+      });
+      y = doc.lastAutoTable.finalY + 10;
+    }
+
+    if (d.movements.length) {
+      doc.setFontSize(10);
+      doc.setTextColor(0);
+      doc.text('Individual movements', 14, y);
+      y += 4;
+      // The whole point of a single-product export is to see exactly what
+      // happened, so this lists every individual issue movement rather than
+      // a day/month roll-up.
+      const singleTotalQty = d.movements.reduce((s, m) => s + m.qty, 0);
+      doc.autoTable({
+        startY: y,
+        head: [['Date', 'From', 'Qty', 'Value', 'Party', 'Reference', 'By']],
+        body: d.movements.map((m) => [
+          fmtDateTime(m.ts),
+          m.from_name || '—',
+          m.entry_unit ? `${fmtQty(m.entry_qty)} ${m.entry_unit}` : `${fmtQty(m.qty)} ${d.product.unit}`,
+          fmtMoney(m.value),
+          m.party || '—',
+          m.reference || '—',
+          m.user_name || '—',
+        ]),
+        foot: [['Total', '', `${fmtQty(singleTotalQty)} ${d.product.unit}`, fmtMoney(d.grand_total.value), '', '', '']],
+        styles: { fontSize: 8 },
+        headStyles: { fillColor: [15, 92, 74] },
+        footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
+      });
+    }
   } else {
     doc.autoTable({
       startY: y,
-      head: [['SKU', 'Product', 'Qty', 'Value', 'Movements']],
-      body: d.totals.map((t) => [t.sku, t.name, `${fmtQty(t.qty)} ${t.unit}`, fmtMoney(t.value), String(t.movements)]),
-      foot: [['Total', '', sumByUnit(d.totals, 'qty', 'unit'), fmtMoney(d.grand_total.value), String(d.grand_total.movements)]],
+      head: [['SKU', 'Product', 'Opening stock', 'Consumed', 'Closing stock', 'Value', 'Movements']],
+      body: d.totals.map((t) => [
+        t.sku, t.name,
+        `${fmtQty(t.opening_stock)} ${t.unit}`,
+        `${fmtQty(t.qty)} ${t.unit}`,
+        `${fmtQty(t.closing_stock)} ${t.unit}`,
+        fmtMoney(t.value),
+        String(t.movements),
+      ]),
+      foot: [[
+        'Total', '',
+        sumByUnit(d.totals, 'opening_stock', 'unit'),
+        sumByUnit(d.totals, 'qty', 'unit'),
+        sumByUnit(d.totals, 'closing_stock', 'unit'),
+        fmtMoney(d.grand_total.value),
+        String(d.grand_total.movements),
+      ]],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
       footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
@@ -1276,9 +1381,15 @@ function exportConsumptionPdf(d, granularity) {
 
     doc.autoTable({
       startY: y,
-      head: [['SKU', 'Product', granularity === 'month' ? 'Month' : 'Date', 'Qty', 'Value']],
-      body: d.rows.map((r) => [r.sku, r.name, periodLabel(r.period, granularity), `${fmtQty(r.qty)} ${r.unit}`, fmtMoney(r.value)]),
-      foot: [['Total', '', '', sumByUnit(d.rows, 'qty', 'unit'), fmtMoney(d.grand_total.value)]],
+      head: [['SKU', 'Product', periodHead, 'Opening stock', 'Consumed', 'Closing stock', 'Value']],
+      body: d.rows.map((r) => [
+        r.sku, r.name, periodLabel(r.period, granularity),
+        `${fmtQty(r.opening_stock)} ${r.unit}`,
+        `${fmtQty(r.qty)} ${r.unit}`,
+        `${fmtQty(r.closing_stock)} ${r.unit}`,
+        fmtMoney(r.value),
+      ]),
+      foot: [['Total', '', '', '', sumByUnit(d.rows, 'qty', 'unit'), '', fmtMoney(d.grand_total.value)]],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
       footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
