@@ -1040,10 +1040,7 @@ function sumByUnit(items, qtyKey, unitKey) {
 }
 
 function consumptionDefaultFrom() {
-  const d = new Date();
-  d.setMonth(d.getMonth() - 11);
-  d.setDate(1);
-  return d.toISOString().slice(0, 10);
+  return '2026-08-08';
 }
 
 async function viewConsumption(view) {
@@ -1136,7 +1133,7 @@ async function viewConsumption(view) {
           <div class="foot">${esc(d.product.name)}</div></div>`
       : `
         <div class="card stat"><div class="label">Products with activity</div>
-          <div class="value">${fmtQty(d.totals.length)}</div>
+          <div class="value">${fmtQty(d.totals.filter((t) => t.movements > 0).length)}</div>
           <div class="foot">of ${fmtQty(S.products.length)} total</div></div>`}
     `;
 
