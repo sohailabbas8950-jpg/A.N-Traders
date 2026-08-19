@@ -1105,9 +1105,12 @@ async function viewConsumption(view) {
     lastData = d;
 
     summary.innerHTML = `
+      <div class="card stat"><div class="label">Total value</div>
+        <div class="value">${esc(fmtMoney(d.grand_total.value))}</div>
+        <div class="foot">${fmtDate(d.from)} – ${fmtDate(d.to)}</div></div>
       <div class="card stat"><div class="label">Movements</div>
         <div class="value">${fmtQty(d.grand_total.movements)}</div>
-        <div class="foot">${fmtDate(d.from)} – ${fmtDate(d.to)}</div></div>
+        <div class="foot">issue movements in range</div></div>
       ${d.product ? `
         <div class="card stat"><div class="label">Total quantity</div>
           <div class="value">${fmtQty(d.totals[0] ? d.totals[0].qty : 0)}</div>
@@ -1127,15 +1130,17 @@ async function viewConsumption(view) {
         return;
       }
       const singleTotalQty = d.movements.reduce((s, m) => s + m.qty, 0);
+      const singleTotalValue = d.movements.reduce((s, m) => s + m.value, 0);
       body.innerHTML = `
         <div class="card"><div class="table-wrap">
           <table>
-            <thead><tr><th>Date</th><th>From</th><th class="num">Qty</th>
+            <thead><tr><th>Date</th><th>From</th><th class="num">Qty</th><th class="num">Value</th>
               <th>Party</th><th>Reference</th><th>By</th></tr></thead>
             <tbody>${d.movements.map((m) => `
               <tr><td style="white-space:normal">${fmtDateTime(m.ts)}</td>
                 <td class="wrap">${esc(m.from_name || '—')}</td>
                 <td class="num">${m.entry_unit ? `${fmtQty(m.entry_qty)} ${esc(m.entry_unit)}` : `${fmtQty(m.qty)} ${esc(d.product.unit)}`}</td>
+                <td class="num">${esc(fmtMoney(m.value))}</td>
                 <td class="wrap">${esc(m.party || '—')}</td>
                 <td class="wrap">${esc(m.reference || '—')}</td>
                 <td style="color:var(--muted)">${esc(m.user_name || '—')}</td></tr>`).join('')}
@@ -1143,6 +1148,7 @@ async function viewConsumption(view) {
             <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
               <td colspan="2">Total</td>
               <td class="num">${fmtQty(singleTotalQty)} ${esc(d.product.unit)}</td>
+              <td class="num">${esc(fmtMoney(singleTotalValue))}</td>
               <td colspan="3"></td></tr></tfoot>
           </table>
         </div></div>`;
@@ -1153,34 +1159,39 @@ async function viewConsumption(view) {
       }
       const totalsQtyLine = sumByUnit(d.totals, 'qty', 'unit');
       const rowsQtyLine = sumByUnit(d.rows, 'qty', 'unit');
+      const granLabel = granularity === 'month' ? 'Monthly' : 'Daily';
       body.innerHTML = `
         <div class="card" style="margin-bottom:16px"><div class="card-head">Totals by product</div>
           <div class="table-wrap"><table>
             <thead><tr><th>SKU</th><th>Product</th><th class="num">Qty</th>
-              <th class="num">Movements</th></tr></thead>
+              <th class="num">Value</th><th class="num">Movements</th></tr></thead>
             <tbody>${d.totals.map((t) => `
               <tr><td class="mono">${esc(t.sku)}</td><td class="wrap">${esc(t.name)}</td>
                 <td class="num">${fmtQty(t.qty)} ${esc(t.unit)}</td>
+                <td class="num">${esc(fmtMoney(t.value))}</td>
                 <td class="num">${fmtQty(t.movements)}</td></tr>`).join('')}
             </tbody>
             <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
               <td colspan="2">Total</td>
               <td class="num">${esc(totalsQtyLine)}</td>
+              <td class="num">${esc(fmtMoney(d.grand_total.value))}</td>
               <td class="num">${fmtQty(d.grand_total.movements)}</td></tr></tfoot>
           </table></div>
         </div>
-        <div class="card"><div class="card-head">Detailed breakdown</div>
+        <div class="card"><div class="card-head">Detailed breakdown <span style="font-weight:500;color:var(--muted)">— ${granLabel} consumption, ${esc(fmtDate(d.from))} to ${esc(fmtDate(d.to))}</span></div>
           <div class="table-wrap"><table>
             <thead><tr><th>SKU</th><th>Product</th><th>${granularity === 'month' ? 'Month' : 'Date'}</th>
-              <th class="num">Qty</th></tr></thead>
+              <th class="num">Qty</th><th class="num">Value</th></tr></thead>
             <tbody>${d.rows.map((r) => `
               <tr><td class="mono">${esc(r.sku)}</td><td class="wrap">${esc(r.name)}</td>
                 <td>${esc(periodLabel(r.period, granularity))}</td>
-                <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td></tr>`).join('')}
+                <td class="num">${fmtQty(r.qty)} ${esc(r.unit)}</td>
+                <td class="num">${esc(fmtMoney(r.value))}</td></tr>`).join('')}
             </tbody>
             <tfoot><tr style="font-weight:680;border-top:2px solid var(--line)">
               <td colspan="3">Total</td>
-              <td class="num">${esc(rowsQtyLine)}</td></tr></tfoot>
+              <td class="num">${esc(rowsQtyLine)}</td>
+              <td class="num">${esc(fmtMoney(d.grand_total.value))}</td></tr></tfoot>
           </table></div>
         </div>`;
     }
@@ -1232,16 +1243,17 @@ function exportConsumptionPdf(d, granularity) {
     const singleTotalQty = d.movements.reduce((s, m) => s + m.qty, 0);
     doc.autoTable({
       startY: y,
-      head: [['Date', 'From', 'Qty', 'Party', 'Reference', 'By']],
+      head: [['Date', 'From', 'Qty', 'Value', 'Party', 'Reference', 'By']],
       body: d.movements.map((m) => [
         fmtDateTime(m.ts),
         m.from_name || '—',
         m.entry_unit ? `${fmtQty(m.entry_qty)} ${m.entry_unit}` : `${fmtQty(m.qty)} ${d.product.unit}`,
+        fmtMoney(m.value),
         m.party || '—',
         m.reference || '—',
         m.user_name || '—',
       ]),
-      foot: [['Total', '', `${fmtQty(singleTotalQty)} ${d.product.unit}`, '', '', '']],
+      foot: [['Total', '', `${fmtQty(singleTotalQty)} ${d.product.unit}`, fmtMoney(d.grand_total.value), '', '', '']],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
       footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
@@ -1249,23 +1261,24 @@ function exportConsumptionPdf(d, granularity) {
   } else {
     doc.autoTable({
       startY: y,
-      head: [['SKU', 'Product', 'Qty', 'Movements']],
-      body: d.totals.map((t) => [t.sku, t.name, `${fmtQty(t.qty)} ${t.unit}`, String(t.movements)]),
-      foot: [['Total', '', sumByUnit(d.totals, 'qty', 'unit'), String(d.grand_total.movements)]],
+      head: [['SKU', 'Product', 'Qty', 'Value', 'Movements']],
+      body: d.totals.map((t) => [t.sku, t.name, `${fmtQty(t.qty)} ${t.unit}`, fmtMoney(t.value), String(t.movements)]),
+      foot: [['Total', '', sumByUnit(d.totals, 'qty', 'unit'), fmtMoney(d.grand_total.value), String(d.grand_total.movements)]],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
       footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
     });
     y = doc.lastAutoTable.finalY + 10;
     doc.setFontSize(10);
-    doc.text('Detailed breakdown', 14, y);
+    doc.setTextColor(0);
+    doc.text(`Detailed breakdown — ${granularity === 'month' ? 'Monthly' : 'Daily'} consumption`, 14, y);
     y += 4;
 
     doc.autoTable({
       startY: y,
-      head: [['SKU', 'Product', granularity === 'month' ? 'Month' : 'Date', 'Qty']],
-      body: d.rows.map((r) => [r.sku, r.name, periodLabel(r.period, granularity), `${fmtQty(r.qty)} ${r.unit}`]),
-      foot: [['Total', '', '', sumByUnit(d.rows, 'qty', 'unit')]],
+      head: [['SKU', 'Product', granularity === 'month' ? 'Month' : 'Date', 'Qty', 'Value']],
+      body: d.rows.map((r) => [r.sku, r.name, periodLabel(r.period, granularity), `${fmtQty(r.qty)} ${r.unit}`, fmtMoney(r.value)]),
+      foot: [['Total', '', '', sumByUnit(d.rows, 'qty', 'unit'), fmtMoney(d.grand_total.value)]],
       styles: { fontSize: 8 },
       headStyles: { fillColor: [15, 92, 74] },
       footStyles: { fillColor: [240, 240, 240], textColor: [20, 20, 20], fontStyle: 'bold' },
