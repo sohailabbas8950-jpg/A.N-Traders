@@ -1418,8 +1418,9 @@ async function viewProducts(view, isCurrent) {
 
   const draw = () => {
     const q = view.querySelector('#p-search').value.toLowerCase();
-    const rows = S.products.filter((p) =>
-      !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
+    const rows = S.products
+      .filter((p) => !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q))
+      .sort((a, b) => a.sku.localeCompare(b.sku, undefined, { numeric: true, sensitivity: 'base' }));
     const box = view.querySelector('#p-table');
     if (!rows.length) {
       box.innerHTML = '<div class="empty">No products yet. Use “New product” or import a CSV list.</div>';
@@ -1451,18 +1452,45 @@ async function viewProducts(view, isCurrent) {
 
   view.querySelector('#p-search').addEventListener('input', draw);
   if (canEdit) {
-    view.querySelector('#new-product').addEventListener('click', () => openProductModal(null));
+    view.querySelector('#new-product').addEventListener('click', async () => {
+      const nextSku = await nextProductSku();
+      openProductModal(null, nextSku);
+    });
     view.querySelector('#import-btn').addEventListener('click', openImportModal);
   }
   draw();
 }
 
-function openProductModal(p) {
+// Looks at every product ever created (active or not, since SKUs must stay
+// globally unique even after a product is deactivated) to find the highest
+// number in use for whatever "prefix-numeric" pattern the catalogue is
+// already following, then proposes the next one. Falls back to leaving the
+// SKU field empty if the catalogue doesn't consistently follow a
+// prefix+number pattern (e.g. an empty catalogue, or free-form codes) --
+// the field stays fully editable either way.
+async function nextProductSku() {
+  try {
+    const d = await api('/api/products?all=1');
+    let best = null;
+    for (const p of d.rows) {
+      const m = /^(.*?)(\d+)$/.exec(p.sku || '');
+      if (!m) continue;
+      const n = parseInt(m[2], 10);
+      if (!best || n > best.n) best = { prefix: m[1], n, len: m[2].length };
+    }
+    if (!best) return '';
+    return best.prefix + String(best.n + 1).padStart(best.len, '0');
+  } catch {
+    return '';
+  }
+}
+
+function openProductModal(p, suggestedSku) {
   const isNew = !p;
   const m = openModal(isNew ? 'New product' : 'Edit product', `
     <div class="form-grid">
       <label>SKU <span class="hint">unique code</span>
-        <input id="p-sku" value="${esc(p?.sku || '')}" placeholder="ZEP-DW-05"></label>
+        <input id="p-sku" value="${esc(p?.sku || suggestedSku || '')}" placeholder="ZEP-DW-05"></label>
       <label>Category
         <select id="p-cat">
           <option value="">— none —</option>
