@@ -103,9 +103,16 @@ function canWrite(locId) {
   return Number(S.user.location_id) === Number(locId);
 }
 
-function writableLocations() {
-  if (S.user.role === 'admin') return S.locations.filter((l) => l.active);
-  return S.locations.filter((l) => l.active && l.id === S.user.location_id);
+function writableLocations(editing) {
+  // When editing an existing movement, its current from/to location must
+  // stay selectable even if that location has since been deactivated --
+  // otherwise the <select> would silently default to a different location
+  // the moment the edit modal opens, and saving would move the movement
+  // somewhere the person never chose.
+  const keep = (l) => l.active
+    || (editing && (l.id === editing.from_location_id || l.id === editing.to_location_id));
+  if (S.user.role === 'admin') return S.locations.filter(keep);
+  return S.locations.filter((l) => keep(l) && l.id === S.user.location_id);
 }
 
 function viewableLocations() {
@@ -496,8 +503,13 @@ function movementsTable(rows, opts = {}) {
           <td class="mono">${esc(m.batch_no || '—')}</td>
           <td>${esc(m.reference || '—')}</td>
           <td class="wrap">${esc(m.party || '—')}</td>
-          <td style="color:var(--muted)">${esc(m.user_name || '—')}</td>
-          ${opts.actions ? `<td><button class="btn small danger" data-del="${m.id}">Delete</button></td>` : ''}
+          <td style="color:var(--muted)">${esc(m.user_name || '—')}${m.edited_at
+            ? ` <span class="hint" title="Edited by ${esc(m.edited_by_name || 'admin')} on ${esc(fmtDateTime(m.edited_at))}">(edited)</span>`
+            : ''}</td>
+          ${opts.actions ? `<td>
+            <button class="btn small" data-edit="${m.id}">Edit</button>
+            <button class="btn small danger" data-del="${m.id}">Delete</button>
+          </td>` : ''}
         </tr>`).join('')}
       </tbody>
     </table>`;
@@ -547,6 +559,12 @@ async function viewMovements(view) {
         } catch (ex) { toast(ex.message, 'error'); }
       });
     });
+    box.querySelectorAll('[data-edit]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const row = d.rows.find((x) => String(x.id) === b.dataset.edit);
+        if (row) openMovementModal(null, load, row);
+      });
+    });
   };
 
   let timer;
@@ -567,18 +585,34 @@ async function viewMovements(view) {
   await load();
 }
 
-function openMovementModal(preset, onDone) {
-  const writable = writableLocations();
+function openMovementModal(preset, onDone, editing) {
+  const writable = writableLocations(editing);
   if (!writable.length) return toast('You are not assigned to a location yet', 'error');
   if (!S.products.length) return toast('Add a product first', 'error');
 
-  const kind = preset?.kind || 'receive';
-  const productOpts = S.products
+  const kind = editing ? editing.kind : (preset?.kind || 'receive');
+
+  // When editing a movement whose product has since been deactivated, it
+  // won't be in S.products (that list is active-only) -- without this, the
+  // <select> would silently fall back to whatever product happens to be
+  // first in the list the moment the modal opens. Splice in a synthetic
+  // entry built from the movement's own row data (already carries sku/name
+  // from the GET /api/movements join) so the real product stays selected.
+  const productList = (() => {
+    if (!editing) return S.products;
+    if (S.products.some((p) => p.id === editing.product_id)) return S.products;
+    return [
+      { id: editing.product_id, sku: editing.sku, name: `${editing.product_name} (inactive)`, unit: editing.unit },
+      ...S.products,
+    ];
+  })();
+  const productOpts = productList
     .map((p) => `<option value="${p.id}">${esc(p.sku)} — ${esc(p.name)}</option>`).join('');
   const locOpts = (list) => list.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('');
-  const allLocs = S.locations.filter((l) => l.active);
+  const allLocs = S.locations.filter((l) => l.active
+    || (editing && (l.id === editing.from_location_id || l.id === editing.to_location_id)));
 
-  const m = openModal('Record stock movement', `
+  const m = openModal(editing ? 'Edit movement' : 'Record stock movement', `
     <div class="tabs" id="kind-tabs">
       <button data-kind="receive" class="${kind === 'receive' ? 'active' : ''}">Receive in</button>
       <button data-kind="issue" class="${kind === 'issue' ? 'active' : ''}">Issue out</button>
@@ -586,6 +620,7 @@ function openMovementModal(preset, onDone) {
       <button data-kind="adjust" class="${kind === 'adjust' ? 'active' : ''}">Adjust</button>
     </div>
     <p class="page-sub" id="kind-help" style="margin-bottom:16px"></p>
+    ${editing ? '<p class="page-sub">Editing an existing entry — stock balances recalculate immediately on save.</p>' : ''}
     <div class="form-grid">
       <label class="full">Product
         <select id="mv-product">${productOpts}</select></label>
@@ -615,7 +650,7 @@ function openMovementModal(preset, onDone) {
         <textarea id="mv-note" rows="2"></textarea></label>
     </div>`,
     `<button class="btn" data-close>Cancel</button>
-     <button class="btn primary" id="mv-save">Save movement</button>`);
+     <button class="btn primary" id="mv-save">${editing ? 'Save changes' : 'Save movement'}</button>`);
 
   let current = kind;
 
@@ -651,7 +686,7 @@ function openMovementModal(preset, onDone) {
   // fragrance is poured in ML but held in KG. Label the box with the unit the
   // storekeeper actually uses, and show what it becomes in stock as they type.
   function selectedProduct() {
-    return S.products.find((p) => String(p.id) === m.querySelector('#mv-product').value);
+    return productList.find((p) => String(p.id) === m.querySelector('#mv-product').value);
   }
 
   function applyProduct() {
@@ -683,6 +718,21 @@ function openMovementModal(preset, onDone) {
   applyKind(kind);
   applyProduct();
 
+  if (editing) {
+    m.querySelector('#mv-product').value = editing.product_id;
+    applyProduct();
+    m.querySelector('#mv-from').value = editing.from_location_id || '';
+    m.querySelector('#mv-to').value = editing.to_location_id || '';
+    m.querySelector('#mv-qty').value = editing.entry_qty ? editing.entry_qty : editing.qty;
+    m.querySelector('#mv-date').value = editing.ts.slice(0, 10);
+    m.querySelector('#mv-batch').value = editing.batch_no || '';
+    m.querySelector('#mv-expiry').value = editing.expiry || '';
+    m.querySelector('#mv-ref').value = editing.reference || '';
+    m.querySelector('#mv-party').value = editing.party || '';
+    m.querySelector('#mv-note').value = editing.note || '';
+    updateConversion();
+  }
+
   m.querySelector('#mv-save').addEventListener('click', async () => {
     const btn = m.querySelector('#mv-save');
     const date = m.querySelector('#mv-date').value;
@@ -705,9 +755,13 @@ function openMovementModal(preset, onDone) {
 
     btn.disabled = true;
     try {
-      await api('/api/movements', { method: 'POST', body: JSON.stringify(payload) });
+      if (editing) {
+        await api('/api/movements/' + editing.id, { method: 'PUT', body: JSON.stringify(payload) });
+      } else {
+        await api('/api/movements', { method: 'POST', body: JSON.stringify(payload) });
+      }
       closeModal();
-      toast('Movement recorded', 'success');
+      toast(editing ? 'Movement updated' : 'Movement recorded', 'success');
       if (onDone) onDone(); else render();
     } catch (ex) {
       modalError(ex.message);
