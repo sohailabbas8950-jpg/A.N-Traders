@@ -1158,21 +1158,21 @@ async function viewConsumption(view) {
 
     // Opening/closing stock is looked back from the full movement ledger
     // (every receive/issue/transfer/adjust, at every location the report
-    // covers), not just the 'issue' rows this report otherwise totals --
-    // and it isn't bounded by the report's own "From" filter, since stock a
-    // product already had before the report window still needs to show up
-    // as its opening balance. If a product's true starting stock was never
-    // entered as a movement (e.g. stock on hand before this app was ever
-    // used), it reads as 0 here -- there's no way to compute a quantity
-    // that was never recorded. Logging it as a dated 'receive' (or 'adjust')
-    // will flow through automatically from then on.
+    // covers), not just the 'issue' rows this report otherwise totals.
+    // Opening stock specifically is each product's very first 'receive'
+    // quantity -- a fixed reference point that ignores the report's own
+    // From/To filters entirely, so it never reads as a confusing 0 just
+    // because a product's real history starts partway through whatever
+    // range happens to be selected. If a product's true starting stock was
+    // never entered as a movement, it reads as 0 here -- there's no way to
+    // compute a quantity that was never recorded.
     const openingLine = sumByUnit(d.totals, 'opening_stock', 'unit');
     const closingLine = sumByUnit(d.totals, 'closing_stock', 'unit');
 
     summary.innerHTML = `
       <div class="card stat"><div class="label">Opening stock</div>
         <div class="value" style="font-size:16px">${esc(openingLine) || '0'}</div>
-        <div class="foot">as of ${fmtDate(d.from)}</div></div>
+        <div class="foot">as first received</div></div>
       <div class="card stat"><div class="label">Closing stock</div>
         <div class="value" style="font-size:16px">${esc(closingLine) || '0'}</div>
         <div class="foot">as of ${fmtDate(d.to)}</div></div>
@@ -1266,7 +1266,7 @@ async function viewConsumption(view) {
       const totalsClosingLine = sumByUnit(d.totals, 'closing_stock', 'unit');
       const rowsQtyLine = sumByUnit(d.rows, 'qty', 'unit');
       body.innerHTML = `
-        <div class="card" style="margin-bottom:16px"><div class="card-head">Totals by product <span style="font-weight:500;color:var(--muted)">— opening stock as of ${esc(fmtDate(d.from))}, closing as of ${esc(fmtDate(d.to))}</span></div>
+        <div class="card" style="margin-bottom:16px"><div class="card-head">Totals by product <span style="font-weight:500;color:var(--muted)">— opening stock as first received, closing as of ${esc(fmtDate(d.to))}</span></div>
           <div class="table-wrap"><table>
             <thead><tr><th>SKU</th><th>Product</th><th class="num">Opening stock</th><th class="num">Consumed</th>
               <th class="num">Closing stock</th>${canSeeValue ? '<th class="num">Value</th>' : ''}<th class="num">Movements</th></tr></thead>
