@@ -487,6 +487,14 @@ async function viewStock(view) {
 function movementsTable(rows, opts = {}) {
   if (!rows.length) return '<div class="empty">No movements recorded yet.</div>';
   const labels = { receive: 'Receive', issue: 'Issue', transfer: 'Transfer', adjust: 'Adjust' };
+  // Only staff-recorded receives ever carry a non-'approved' status (see
+  // needsApproval on the backend) -- everything else is approved the moment
+  // it's created, so this badge only ever shows up where it's relevant.
+  const statusBadge = (m) => {
+    if (!m.status || m.status === 'approved') return '';
+    if (m.status === 'pending') return ' <span class="pill pending">Pending approval</span>';
+    return ' <span class="pill rejected">Rejected</span>';
+  };
   return `
     <table>
       <thead><tr>
@@ -497,7 +505,7 @@ function movementsTable(rows, opts = {}) {
       <tbody>${rows.map((m) => `
         <tr>
           <td style="color:var(--muted)">${fmtDateTime(m.ts)}</td>
-          <td><span class="pill ${esc(m.kind)}">${esc(labels[m.kind] || m.kind)}</span></td>
+          <td><span class="pill ${esc(m.kind)}">${esc(labels[m.kind] || m.kind)}</span>${statusBadge(m)}</td>
           <td class="mono">${esc(m.sku)}</td>
           <td class="wrap">${esc(m.product_name)}</td>
           <td class="num">${qtyCell(m)}</td>
@@ -508,22 +516,28 @@ function movementsTable(rows, opts = {}) {
           <td class="wrap">${esc(m.party || '—')}</td>
           <td style="color:var(--muted)">${esc(m.user_name || '—')}${m.edited_at
             ? ` <span class="hint" title="Edited by ${esc(m.edited_by_name || 'admin')} on ${esc(fmtDateTime(m.edited_at))}">(edited)</span>`
+            : ''}${m.reviewed_at
+            ? ` <span class="hint" title="${m.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(m.reviewed_by_name || 'admin')} on ${esc(fmtDateTime(m.reviewed_at))}">(reviewed)</span>`
             : ''}</td>
-          ${opts.actions ? `<td>
+          ${opts.actions ? `<td>${m.status === 'pending' ? `
+            <button class="btn small primary" data-review="${m.id}">Review</button>
+          ` : `
             <button class="btn small" data-edit="${m.id}">Edit</button>
             <button class="btn small danger" data-del="${m.id}">Delete</button>
-          </td>` : ''}
+          `}</td>` : ''}
         </tr>`).join('')}
       </tbody>
     </table>`;
 }
 
 async function viewMovements(view) {
+  const isAdmin = S.user.role === 'admin';
   view.innerHTML = `
     <div class="page-head">
       <div><h2>Stock movements</h2>
         <p class="page-sub">Every receipt, issue, transfer and adjustment — permanent audit trail</p></div>
       <div class="spacer"></div>
+      ${isAdmin ? '<span id="pending-badge"></span>' : ''}
       <button class="btn" id="export-mv">Export CSV</button>
       <button class="btn primary" id="new-move">Record movement</button>
     </div>
@@ -536,6 +550,13 @@ async function viewMovements(view) {
         <option value="transfer">Transfer</option>
         <option value="adjust">Adjust</option>
       </select>
+      ${isAdmin ? `
+      <select id="f-status">
+        <option value="">All statuses</option>
+        <option value="pending">Pending approval</option>
+        <option value="approved">Approved</option>
+        <option value="rejected">Rejected</option>
+      </select>` : ''}
       <label class="checkline">From <input type="date" id="f-from"></label>
       <label class="checkline">To <input type="date" id="f-to"></label>
       <button class="btn" id="f-clear">Clear</button>
@@ -547,11 +568,26 @@ async function viewMovements(view) {
     const q = (id) => view.querySelector(id).value;
     if (q('#f-search')) p.set('search', q('#f-search'));
     if (q('#f-kind')) p.set('kind', q('#f-kind'));
+    if (isAdmin && q('#f-status')) p.set('status', q('#f-status'));
     if (q('#f-from')) p.set('from', q('#f-from'));
     if (q('#f-to')) p.set('to', q('#f-to'));
     const d = await api('/api/movements?' + p);
     const box = view.querySelector('#mv-table');
-    box.innerHTML = movementsTable(d.rows, { actions: S.user.role === 'admin' });
+    box.innerHTML = movementsTable(d.rows, { actions: isAdmin });
+    if (isAdmin) {
+      // A lightweight, unfiltered count so admin sees the TOTAL pending
+      // queue size even while a kind/date/search filter is narrowing the
+      // table itself -- otherwise a pending receive outside the current
+      // filter would go unnoticed.
+      api('/api/movements?status=pending&limit=1000').then((pd) => {
+        const badge = view.querySelector('#pending-badge');
+        if (badge && pd.rows.length) {
+          badge.innerHTML = `<span class="pill pending">${pd.rows.length} pending approval${pd.rows.length === 1 ? '' : 's'}</span>`;
+        } else if (badge) {
+          badge.innerHTML = '';
+        }
+      }).catch(() => {});
+    }
     box.querySelectorAll('[data-del]').forEach((b) => {
       b.addEventListener('click', async () => {
         if (!confirm('Delete this movement? Stock balances will be recalculated.')) return;
@@ -568,16 +604,23 @@ async function viewMovements(view) {
         if (row) openMovementModal(null, load, row);
       });
     });
+    box.querySelectorAll('[data-review]').forEach((b) => {
+      b.addEventListener('click', () => {
+        const row = d.rows.find((x) => String(x.id) === b.dataset.review);
+        if (row) openMovementModal(null, load, row, true);
+      });
+    });
   };
 
   let timer;
   view.querySelector('#f-search').addEventListener('input', () => {
     clearTimeout(timer); timer = setTimeout(load, 220);
   });
-  ['#f-kind', '#f-from', '#f-to'].forEach((id) =>
+  ['#f-kind', '#f-from', '#f-to', ...(isAdmin ? ['#f-status'] : [])].forEach((id) =>
     view.querySelector(id).addEventListener('change', load));
   view.querySelector('#f-clear').addEventListener('click', () => {
-    ['#f-search', '#f-kind', '#f-from', '#f-to'].forEach((id) => { view.querySelector(id).value = ''; });
+    ['#f-search', '#f-kind', '#f-from', '#f-to', ...(isAdmin ? ['#f-status'] : [])]
+      .forEach((id) => { view.querySelector(id).value = ''; });
     load();
   });
   view.querySelector('#new-move').addEventListener('click', () => openMovementModal(null, load));
@@ -588,7 +631,7 @@ async function viewMovements(view) {
   await load();
 }
 
-function openMovementModal(preset, onDone, editing) {
+function openMovementModal(preset, onDone, editing, approving) {
   const writable = writableLocations(editing);
   if (!writable.length) return toast('You are not assigned to a location yet', 'error');
   if (!S.products.length) return toast('Add a product first', 'error');
@@ -616,15 +659,18 @@ function openMovementModal(preset, onDone, editing) {
   const allLocs = S.locations.filter((l) => l.active
     || (editing && (l.id === editing.from_location_id || l.id === editing.to_location_id)));
 
-  const m = openModal(editing ? 'Edit movement' : 'Record stock movement', `
-    <div class="tabs" id="kind-tabs">
+  const m = openModal(
+    approving ? 'Review pending receipt' : (editing ? 'Edit movement' : 'Record stock movement'), `
+    <div class="tabs" id="kind-tabs" style="${approving ? 'display:none' : ''}">
       <button data-kind="receive" class="${kind === 'receive' ? 'active' : ''}">Receive in</button>
       <button data-kind="issue" class="${kind === 'issue' ? 'active' : ''}">Issue out</button>
       <button data-kind="transfer" class="${kind === 'transfer' ? 'active' : ''}">Transfer</button>
       <button data-kind="adjust" class="${kind === 'adjust' ? 'active' : ''}">Adjust</button>
     </div>
     <p class="page-sub" id="kind-help" style="margin-bottom:16px"></p>
-    ${editing ? '<p class="page-sub">Editing an existing entry — stock balances recalculate immediately on save.</p>' : ''}
+    ${approving
+      ? `<p class="page-sub">Submitted by ${esc(editing.user_name || 'a staff member')} — review the quantity and cost below, then approve to add it to stock, or reject it.</p>`
+      : editing ? '<p class="page-sub">Editing an existing entry — stock balances recalculate immediately on save.</p>' : ''}
     <div class="form-grid">
       <label class="full">Product
         <select id="mv-product">${productOpts}</select></label>
@@ -657,7 +703,8 @@ function openMovementModal(preset, onDone, editing) {
         <textarea id="mv-note" rows="2"></textarea></label>
     </div>`,
     `<button class="btn" data-close>Cancel</button>
-     <button class="btn primary" id="mv-save">${editing ? 'Save changes' : 'Save movement'}</button>`);
+     ${approving ? '<button class="btn danger" id="mv-reject">Reject</button>' : ''}
+     <button class="btn primary" id="mv-save">${approving ? 'Approve' : (editing ? 'Save changes' : 'Save movement')}</button>`);
 
   let current = kind;
 
@@ -770,19 +817,46 @@ function openMovementModal(preset, onDone, editing) {
 
     btn.disabled = true;
     try {
-      if (editing) {
+      if (approving) {
+        await api('/api/movements/' + editing.id + '/approve', { method: 'POST', body: JSON.stringify(payload) });
+        closeModal();
+        toast('Receive approved', 'success');
+      } else if (editing) {
         await api('/api/movements/' + editing.id, { method: 'PUT', body: JSON.stringify(payload) });
+        closeModal();
+        toast('Movement updated', 'success');
       } else {
-        await api('/api/movements', { method: 'POST', body: JSON.stringify(payload) });
+        const result = await api('/api/movements', { method: 'POST', body: JSON.stringify(payload) });
+        closeModal();
+        // A staff-recorded receive doesn't post to stock right away -- it
+        // waits in the pending queue for an admin to review it (see
+        // needsApproval on the backend). Say so explicitly rather than
+        // implying it already happened.
+        toast(result.status === 'pending' ? 'Submitted for admin approval' : 'Movement recorded', 'success');
       }
-      closeModal();
-      toast(editing ? 'Movement updated' : 'Movement recorded', 'success');
       if (onDone) onDone(); else render();
     } catch (ex) {
       modalError(ex.message);
       btn.disabled = false;
     }
   });
+
+  if (approving) {
+    m.querySelector('#mv-reject').addEventListener('click', async () => {
+      if (!confirm('Reject this pending receive? It will never affect stock.')) return;
+      const rejectBtn = m.querySelector('#mv-reject');
+      rejectBtn.disabled = true;
+      try {
+        await api('/api/movements/' + editing.id + '/reject', { method: 'POST', body: '{}' });
+        closeModal();
+        toast('Receive rejected', 'success');
+        if (onDone) onDone(); else render();
+      } catch (ex) {
+        modalError(ex.message);
+        rejectBtn.disabled = false;
+      }
+    });
+  }
 }
 
 // ------------------------------------------------------------ batches

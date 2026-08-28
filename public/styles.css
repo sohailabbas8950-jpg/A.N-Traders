@@ -211,6 +211,8 @@ td.wrap { white-space: normal; min-width: 200px; }
 .pill.low { background: var(--danger-soft); color: var(--danger); border-color: #f5cfca; }
 .pill.ok { background: var(--ok-soft); color: var(--ok); border-color: #bfe3cd; }
 .pill.muted { opacity: .75; }
+.pill.pending { background: var(--warn-soft); color: var(--warn); border-color: #f2ddb8; }
+.pill.rejected { background: var(--danger-soft); color: var(--danger); border-color: #f5cfca; }
 
 /* ---------------------------------------------------------- controls */
 
