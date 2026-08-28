@@ -592,6 +592,7 @@ function openMovementModal(preset, onDone, editing) {
   const writable = writableLocations(editing);
   if (!writable.length) return toast('You are not assigned to a location yet', 'error');
   if (!S.products.length) return toast('Add a product first', 'error');
+  const canSeeValue = S.user.role !== 'staff';
 
   const kind = editing ? editing.kind : (preset?.kind || 'receive');
 
@@ -643,6 +644,9 @@ function openMovementModal(preset, onDone, editing) {
         <input id="mv-batch" placeholder="e.g. B-2408-14"></label>
       <label>Expiry date <span class="hint">optional</span>
         <input type="date" id="mv-expiry"></label>
+      ${canSeeValue ? `
+      <label id="wrap-cost">Unit cost <span class="hint">this batch's actual rate, if different</span>
+        <input type="number" id="mv-cost" step="any" placeholder="0"></label>` : ''}
 
       <label>Reference <span class="hint">invoice / GRN / DC no.</span>
         <input id="mv-ref"></label>
@@ -676,6 +680,8 @@ function openMovementModal(preset, onDone, editing) {
 
     wrapFrom.classList.toggle('hidden', k === 'receive' || k === 'adjust');
     wrapTo.classList.toggle('hidden', k === 'issue');
+    const wrapCost = m.querySelector('#wrap-cost');
+    if (wrapCost) wrapCost.classList.toggle('hidden', k !== 'receive');
 
     // Transfers may target any location; everything else must be one you can write to.
     selTo.innerHTML = locOpts(k === 'transfer' ? allLocs : writable);
@@ -701,6 +707,8 @@ function openMovementModal(preset, onDone, editing) {
     label.textContent = `Quantity (${entry ? p.entry_unit : p.unit})`;
     conv.classList.toggle('hidden', !entry);
     updateConversion();
+    const costInput = m.querySelector('#mv-cost');
+    if (costInput && !editing) costInput.value = p.cost_price || '';
   }
 
   function updateConversion() {
@@ -733,6 +741,8 @@ function openMovementModal(preset, onDone, editing) {
     m.querySelector('#mv-ref').value = editing.reference || '';
     m.querySelector('#mv-party').value = editing.party || '';
     m.querySelector('#mv-note').value = editing.note || '';
+    const editCostInput = m.querySelector('#mv-cost');
+    if (editCostInput) editCostInput.value = editing.unit_cost || '';
     updateConversion();
   }
 
@@ -754,6 +764,8 @@ function openMovementModal(preset, onDone, editing) {
       note: m.querySelector('#mv-note').value,
       ts: date ? new Date(date + 'T12:00:00').toISOString() : undefined,
     };
+    const costInputEl = m.querySelector('#mv-cost');
+    if (costInputEl && costInputEl.value !== '') payload.unit_cost = Number(costInputEl.value);
     if (!payload.qty) return modalError('Enter a quantity');
 
     btn.disabled = true;
