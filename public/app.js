@@ -811,8 +811,18 @@ function openMovementModal(preset, onDone, editing, approving) {
       note: m.querySelector('#mv-note').value,
       ts: date ? new Date(date + 'T12:00:00').toISOString() : undefined,
     };
+    // The Unit cost box only applies to (and is only shown for) receives --
+    // for every other kind it's still sitting in the DOM with whatever value
+    // applyProduct() last stuffed into it (the product's cost price as of
+    // when it was selected, which can go stale the moment someone else
+    // corrects that price elsewhere without this tab being reloaded). Only
+    // read it for receives, so an issue/transfer/adjust always lets the
+    // server default unit_cost to the product's CURRENT cost_price instead
+    // of silently resending a stale number for a field the person never saw.
     const costInputEl = m.querySelector('#mv-cost');
-    if (costInputEl && costInputEl.value !== '') payload.unit_cost = Number(costInputEl.value);
+    if (current === 'receive' && costInputEl && costInputEl.value !== '') {
+      payload.unit_cost = Number(costInputEl.value);
+    }
     if (!payload.qty) return modalError('Enter a quantity');
 
     btn.disabled = true;
