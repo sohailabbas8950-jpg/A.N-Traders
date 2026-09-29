@@ -1200,6 +1200,7 @@ async function viewConsumption(view) {
     <div class="toolbar">
       <select id="f-product" style="min-width:220px">
         <option value="all">All products</option>
+        <option value="__custom__">Choose products…</option>
         ${S.products.map((p) => `<option value="${p.id}">${esc(p.sku)} — ${esc(p.name)}</option>`).join('')}
       </select>
       <select id="f-loc">
@@ -1218,10 +1219,20 @@ async function viewConsumption(view) {
 
   let granularity = 'day';
   let lastData = null;
+  // null = whatever the dropdown says (All products, or one specific
+  // product); an array = the hand-picked subset from the "Choose
+  // products..." picker below, which is what actually gets sent as the
+  // comma-separated `product` param regardless of what the <select> shows.
+  let selectedProductIds = null;
+
+  const productParam = () => {
+    if (selectedProductIds) return selectedProductIds.join(',');
+    return view.querySelector('#f-product').value;
+  };
 
   const load = async () => {
     const params = new URLSearchParams({
-      product: view.querySelector('#f-product').value,
+      product: productParam(),
       location: view.querySelector('#f-loc').value,
       granularity,
       from: view.querySelector('#f-from').value,
@@ -1396,7 +1407,49 @@ async function viewConsumption(view) {
     }
   };
 
-  view.querySelector('#f-product').addEventListener('change', load);
+  const productSelect = view.querySelector('#f-product');
+  // Clears the picker's stashed selection any time the person goes back to
+  // picking "All products" or a single product from the plain dropdown, so
+  // a stale multi-select list can never silently keep filtering the report.
+  const clearCustomSelection = () => {
+    selectedProductIds = null;
+    const stale = productSelect.querySelector('option[value="__multi__"]');
+    if (stale) stale.remove();
+  };
+
+  productSelect.addEventListener('change', () => {
+    if (productSelect.value === '__custom__') {
+      openConsumptionProductPicker(selectedProductIds, (ids) => {
+        if (!ids || !ids.length || ids.length === S.products.length) {
+          // Nothing picked, or literally everything picked -- both are the
+          // same as "All products", so just fall back to the plain option
+          // rather than carrying around a pointless custom list.
+          clearCustomSelection();
+          productSelect.value = 'all';
+        } else {
+          selectedProductIds = ids;
+          let opt = productSelect.querySelector('option[value="__multi__"]');
+          if (!opt) {
+            opt = document.createElement('option');
+            opt.value = '__multi__';
+            productSelect.querySelector('option[value="__custom__"]').after(opt);
+          }
+          opt.textContent = `${ids.length} products selected`;
+          productSelect.value = '__multi__';
+        }
+        load();
+      }, () => {
+        // Cancelled -- the select is currently sitting on '__custom__'
+        // (that's what triggered this), so put it back to whatever was
+        // actually active before: the existing multi-select, if there was
+        // one, otherwise plain "All products".
+        productSelect.value = selectedProductIds ? '__multi__' : 'all';
+      });
+    } else {
+      clearCustomSelection();
+      load();
+    }
+  });
   view.querySelector('#f-loc').addEventListener('change', load);
   view.querySelector('#f-from').addEventListener('change', load);
   view.querySelector('#f-to').addEventListener('change', load);
@@ -1406,19 +1459,90 @@ async function viewConsumption(view) {
     load();
   }));
 
-  view.querySelector('#dl-pdf').addEventListener('click', () => exportConsumptionPdf(lastData, granularity));
+  view.querySelector('#dl-pdf').addEventListener('click', () => exportConsumptionPdf(lastData, granularity, selectedProductIds ? selectedProductIds.length : null));
 
   await load();
 }
 
-function exportConsumptionPdf(d, granularity) {
+// Lets the Consumption report be scoped to a hand-picked subset of products
+// instead of only "all" or "exactly one" -- e.g. leaving out a couple of
+// discontinued items, or reviewing just a handful of fragrances together.
+// Mirrors the product picker already used for starting a cycle stock count.
+function openConsumptionProductPicker(initiallySelected, onApply, onCancel) {
+  const m = openModal('Choose products for this report', `
+    <input id="cp-search" placeholder="Search products to include…" style="width:100%;margin-bottom:8px">
+    <div class="checkline" style="margin-bottom:8px">
+      <button class="btn" id="cp-all" type="button" style="padding:4px 10px">Select all</button>
+      <button class="btn" id="cp-none" type="button" style="padding:4px 10px">Clear all</button>
+      <div class="spacer"></div>
+      <span class="hint" id="cp-count-label"></span>
+    </div>
+    <div id="cp-list" style="max-height:320px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 10px"></div>`,
+    `<button class="btn" data-close id="cp-cancel">Cancel</button>
+     <button class="btn primary" id="cp-apply">Apply</button>`);
+
+  const list = m.querySelector('#cp-list');
+  const countLabel = m.querySelector('#cp-count-label');
+  const selected = new Set(initiallySelected || []);
+
+  const updateCount = () => {
+    countLabel.textContent = `${selected.size} of ${S.products.length} selected`;
+  };
+
+  const drawList = () => {
+    const q = m.querySelector('#cp-search').value.toLowerCase();
+    const rows = S.products.filter((p) =>
+      !q || p.name.toLowerCase().includes(q) || p.sku.toLowerCase().includes(q));
+    list.innerHTML = rows.length
+      ? rows.map((p) => `
+          <label class="checkline" style="padding:4px 0">
+            <input type="checkbox" data-pid="${p.id}" ${selected.has(p.id) ? 'checked' : ''}>
+            <span class="mono" style="color:var(--muted)">${esc(p.sku)}</span> ${esc(p.name)}
+          </label>`).join('')
+      : '<div class="empty">No products match.</div>';
+    list.querySelectorAll('[data-pid]').forEach((cb) => cb.addEventListener('change', () => {
+      const pid = Number(cb.dataset.pid);
+      if (cb.checked) selected.add(pid); else selected.delete(pid);
+      updateCount();
+    }));
+  };
+
+  m.querySelector('#cp-search').addEventListener('input', drawList);
+  m.querySelector('#cp-all').addEventListener('click', () => {
+    S.products.forEach((p) => selected.add(p.id));
+    drawList();
+    updateCount();
+  });
+  m.querySelector('#cp-none').addEventListener('click', () => {
+    selected.clear();
+    drawList();
+    updateCount();
+  });
+  if (onCancel) {
+    m.querySelector('#cp-cancel').addEventListener('click', onCancel);
+    document.getElementById('modal-backdrop').addEventListener('click', function backdropCancel(e) {
+      if (e.target.id === 'modal-backdrop') { onCancel(); this.removeEventListener('click', backdropCancel); }
+    });
+  }
+  m.querySelector('#cp-apply').addEventListener('click', () => {
+    closeModal();
+    onApply([...selected]);
+  });
+
+  drawList();
+  updateCount();
+}
+
+function exportConsumptionPdf(d, granularity, selectedCount) {
   if (!d) return toast('Nothing to export yet', 'error');
   if (!window.jspdf) return toast('PDF library did not load — check your connection', 'error');
   const canSeeValue = S.user.role !== 'staff';
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();
   const isSingle = !!d.product;
-  const title = isSingle ? `Consumption — ${d.product.sku} ${d.product.name}` : 'Consumption — All products';
+  const title = isSingle
+    ? `Consumption — ${d.product.sku} ${d.product.name}`
+    : selectedCount ? `Consumption — Selected products (${selectedCount})` : 'Consumption — All products';
 
   doc.setFontSize(14);
   doc.text('A.N Traders', 14, 16);
@@ -1539,7 +1663,8 @@ function exportConsumptionPdf(d, granularity) {
     });
   }
 
-  const fname = `consumption-${isSingle ? d.product.sku : 'all-products'}-${d.from}_to_${d.to}.pdf`.replace(/[^A-Za-z0-9._-]+/g, '-');
+  const scopeSlug = isSingle ? d.product.sku : (selectedCount ? `selected-${selectedCount}-products` : 'all-products');
+  const fname = `consumption-${scopeSlug}-${d.from}_to_${d.to}.pdf`.replace(/[^A-Za-z0-9._-]+/g, '-');
   doc.save(fname);
 }
 
