@@ -962,18 +962,114 @@ function ingredientEditor(host, { products, onEdit }) {
 // for a product that is no longer in the active product list.
 const asProduct = (it) => ({ id: it.product_id, sku: it.sku, name: it.name || it.product_name, unit: it.unit, entry_unit: it.entry_unit, entry_factor: it.entry_factor });
 
+// "Finished product" box: type to search the existing products, pick one from
+// the list, or (admin/manager) type a brand-new name to add it as a new
+// finished product on the spot. Finished goods usually don't exist yet --
+// the product list so far is mostly raw materials.
+function productCombo(host, prefix, { products, allowNew, disabled, onChange }) {
+  const listId = prefix + '-plist';
+  host.innerHTML = `
+    <label>Finished product <span class="hint">${allowNew ? 'pick from the list, or type a new name to add it' : 'pick from the list'}</span>
+      <input id="${prefix}-pname" list="${listId}" autocomplete="off" placeholder="Start typing…" ${disabled ? 'disabled' : ''}>
+      <datalist id="${listId}">${products.map((p) => `<option value="${esc(prodLabel(p))}"></option>`).join('')}</datalist></label>
+    <div id="${prefix}-newbox" class="hidden" style="margin-top:10px;padding:12px;border:1px dashed var(--line, #cfd6dd);border-radius:8px">
+      <div class="page-sub" style="margin:0 0 10px" id="${prefix}-newmsg"></div>
+      <div class="form-grid">
+        <label>Unit it's counted in
+          <select id="${prefix}-nunit"><option>Litre</option><option>Kg</option><option>Piece</option></select></label>
+        <label>SKU <span class="hint">you can change this</span>
+          <input id="${prefix}-nsku"></label>
+      </div>
+    </div>`;
+  const input = host.querySelector(`#${prefix}-pname`);
+  const box = host.querySelector(`#${prefix}-newbox`);
+  const unitSel = host.querySelector(`#${prefix}-nunit`);
+  const skuInput = host.querySelector(`#${prefix}-nsku`);
+
+  const nextSku = () => {
+    const used = new Set(S.products.map((p) => String(p.sku).toUpperCase()));
+    for (let n = 1; n < 10000; n++) {
+      const sku = 'FG-' + String(n).padStart(3, '0');
+      if (!used.has(sku)) return sku;
+    }
+    return 'FG-NEW';
+  };
+
+  const resolve = () => {
+    const text = input.value.trim();
+    if (!text) return null;
+    const lower = text.toLowerCase();
+    const hit = products.find((p) => prodLabel(p).toLowerCase() === lower)
+      || products.find((p) => String(p.name).toLowerCase() === lower)
+      || products.find((p) => String(p.sku).toLowerCase() === lower);
+    if (hit) return { product: hit };
+    return allowNew ? { newName: text } : { invalid: text };
+  };
+
+  let lastKey = null;
+  const update = () => {
+    const res = resolve();
+    const isNew = !!(res && res.newName);
+    box.classList.toggle('hidden', !isNew);
+    if (isNew) {
+      host.querySelector(`#${prefix}-newmsg`).textContent = `"${res.newName}" isn't in your products yet — it will be added as a new finished product when you save.`;
+      if (!skuInput.value) skuInput.value = nextSku();
+    }
+    const key = res ? (res.product ? 'p' + res.product.id : isNew ? 'n:' + res.newName + ':' + unitSel.value : 'x') : '';
+    if (key !== lastKey) { lastKey = key; if (onChange) onChange(res); }
+  };
+  input.addEventListener('input', update);
+  input.addEventListener('change', update);
+  unitSel.addEventListener('change', update);
+
+  return {
+    input,
+    resolve,
+    setProduct(p) { input.value = prodLabel(p); update(); },
+    // A stand-in object for a not-yet-created product, so unit labels work.
+    pending() {
+      const res = resolve();
+      return res && res.newName ? { id: null, sku: skuInput.value, name: res.newName, unit: unitSel.value, entry_unit: '', entry_factor: 0 } : null;
+    },
+    newFields() { return { unit: unitSel.value, sku: skuInput.value }; },
+  };
+}
+
+// Returns the real product for a combo selection, creating it first when the
+// person typed a new name.
+async function ensureFinishedProduct(combo) {
+  const res = combo.resolve();
+  if (!res) throw new Error('Choose or type the finished product');
+  if (res.product) return res.product;
+  if (res.invalid) throw new Error('That product isn\'t in the list — ask an admin to add it');
+  const f = combo.newFields();
+  if (!f.sku.trim()) throw new Error('Enter a SKU for the new product');
+  let cat = S.categories.find((c) => /finished/i.test(c.name));
+  if (!cat) {
+    try {
+      const r = await api('/api/categories', { method: 'POST', body: JSON.stringify({ name: 'Finished Goods' }) });
+      cat = { id: r.id, name: 'Finished Goods' };
+      S.categories.push(cat);
+    } catch { cat = null; }
+  }
+  const r = await api('/api/products', { method: 'POST', body: JSON.stringify({
+    sku: f.sku.trim(), name: res.newName, unit: f.unit, category_id: cat ? cat.id : null, cost_price: 0, sale_price: 0,
+  }) });
+  await refreshProducts();
+  const made = S.products.find((p) => p.id === r.id);
+  if (!made) throw new Error('The new product was created but could not be loaded — refresh and try again');
+  return made;
+}
+
 function openRecipeModal(recipe, recipes, onDone) {
   const taken = new Set(recipes.filter((r) => !recipe || r.id !== recipe.id).map((r) => r.product_id));
-  let choices = S.products.filter((p) => !taken.has(p.id));
-  if (recipe && !choices.some((p) => p.id === recipe.product_id)) choices = [asProduct(recipe), ...choices];
-  if (!choices.length) return toast('Every product already has a recipe', 'error');
+  const known = [...S.products];
+  if (recipe && !known.some((p) => p.id === recipe.product_id)) known.unshift(asProduct(recipe));
 
   const m = openModal(recipe ? 'Edit recipe' : 'New recipe', `
     <p class="page-sub">List what goes into one batch of the finished product. When a batch is recorded, these quantities are filled in (scaled to the amount made) and can still be adjusted.</p>
     <div class="form-grid">
-      <label class="full">Finished product
-        <select id="rc-product" ${recipe ? 'disabled' : ''}>${choices.map((p) =>
-          `<option value="${p.id}">${esc(prodLabel(p))}</option>`).join('')}</select></label>
+      <div class="full" id="rc-pcombo"></div>
       <label>Batch size this recipe is written for <span class="hint" id="rc-unit"></span>
         <input type="number" id="rc-size" step="any" min="0" placeholder="e.g. 100"></label>
       <label class="full">Note <span class="hint">optional</span>
@@ -986,13 +1082,17 @@ function openRecipeModal(recipe, recipes, onDone) {
      <button class="btn primary" id="rc-save">${recipe ? 'Save recipe' : 'Create recipe'}</button>`);
 
   const editor = ingredientEditor(m.querySelector('#rc-ings'), { products: S.products });
-  const sel = m.querySelector('#rc-product');
-  const finished = () => choices.find((p) => String(p.id) === sel.value);
-  const syncUnit = () => { const p = finished(); m.querySelector('#rc-unit').textContent = p ? `(${unitLabel(p)})` : ''; };
-  sel.addEventListener('change', syncUnit);
+  const syncUnit = () => {
+    const res = combo.resolve();
+    const p = res && (res.product || combo.pending());
+    m.querySelector('#rc-unit').textContent = p ? `(${unitLabel(p)})` : '';
+  };
+  const combo = productCombo(m.querySelector('#rc-pcombo'), 'rc', {
+    products: known, allowNew: S.user.role !== 'staff', disabled: !!recipe, onChange: syncUnit,
+  });
 
   if (recipe) {
-    sel.value = String(recipe.product_id);
+    combo.setProduct(known.find((p) => p.id === recipe.product_id));
     m.querySelector('#rc-size').value = fromBase(recipe, recipe.output_qty);
     m.querySelector('#rc-note').value = recipe.note || '';
     recipe.items.forEach((it) => editor.registerProduct(asProduct(it)));
@@ -1004,16 +1104,18 @@ function openRecipeModal(recipe, recipes, onDone) {
   m.querySelector('#rc-add').addEventListener('click', () => editor.addRow());
 
   m.querySelector('#rc-save').addEventListener('click', async () => {
-    const p = finished();
     const size = Number(m.querySelector('#rc-size').value);
+    const res = combo.resolve();
+    if (!res) return modalError('Choose or type the finished product');
+    if (res.product && taken.has(res.product.id)) return modalError('That product already has a recipe — edit that one instead');
     if (!(size > 0)) return modalError('Enter the batch size this recipe is written for');
     if (editor.hasIncomplete()) return modalError('Every ingredient needs a product and a quantity — or remove the empty row');
-    const items = editor.getLines();
-    if (!items.length) return modalError('Add at least one ingredient');
-    const payload = { product_id: p.id, output_qty: toBase(p, size), note: m.querySelector('#rc-note').value, items };
+    if (!editor.getLines().length) return modalError('Add at least one ingredient');
     const btn = m.querySelector('#rc-save');
     btn.disabled = true;
     try {
+      const p = await ensureFinishedProduct(combo);
+      const payload = { product_id: p.id, output_qty: toBase(p, size), note: m.querySelector('#rc-note').value, items: editor.getLines() };
       await api(recipe ? '/api/recipes/' + recipe.id : '/api/recipes', { method: recipe ? 'PUT' : 'POST', body: JSON.stringify(payload) });
       closeModal();
       toast('Recipe saved', 'success');
@@ -1025,17 +1127,16 @@ function openRecipeModal(recipe, recipes, onDone) {
 function openBatchModal(recipes, onDone) {
   const writable = writableLocations();
   if (!writable.length) return toast('You are not assigned to a location yet', 'error');
-  if (!S.products.length) return toast('Add a product first', 'error');
   const isStaff = S.user.role === 'staff';
   const recipeOf = new Map(recipes.map((r) => [r.product_id, r]));
+  // Products with a recipe first, since those are the ones usually made.
   const outputs = [...S.products].sort((a, b) => (recipeOf.has(b.id) ? 1 : 0) - (recipeOf.has(a.id) ? 1 : 0));
+  if (!outputs.length && isStaff) return toast('Add a product first', 'error');
 
   const m = openModal('Record production batch', `
     ${isStaff ? '<p class="page-sub">This will be sent to the admin for approval. Stock only changes once it is approved.</p>' : ''}
     <div class="form-grid">
-      <label class="full">What was made
-        <select id="pb-product">${outputs.map((p) =>
-          `<option value="${p.id}">${esc(prodLabel(p))}${recipeOf.has(p.id) ? '  ✓ recipe' : ''}</option>`).join('')}</select></label>
+      <div class="full" id="pb-pcombo"></div>
       <label>Quantity made <span class="hint" id="pb-unit"></span>
         <input type="number" id="pb-qty" step="any" min="0" placeholder="0"></label>
       <label>Location
@@ -1058,20 +1159,24 @@ function openBatchModal(recipes, onDone) {
 
   let dirty = false; // true once someone hand-edits the ingredient rows
   const editor = ingredientEditor(m.querySelector('#pb-ings'), { products: S.products, onEdit: () => { dirty = true; syncReset(); } });
-  const sel = m.querySelector('#pb-product');
   const qtyEl = m.querySelector('#pb-qty');
-  const finished = () => S.products.find((p) => String(p.id) === sel.value);
-  const recipe = () => recipeOf.get(Number(sel.value));
+  let combo; // assigned below; handlers only run after that
 
-  function syncReset() {
-    m.querySelector('#pb-reset').classList.toggle('hidden', !(recipe() && dirty));
-  }
+  const current = () => {
+    const res = combo.resolve();
+    return res ? (res.product || combo.pending()) : null;
+  };
+  const recipe = () => {
+    const p = current();
+    return p && p.id ? recipeOf.get(p.id) : undefined;
+  };
+  function syncReset() { m.querySelector('#pb-reset').classList.toggle('hidden', !(recipe() && dirty)); }
 
   function applyRecipe() {
     const r = recipe();
-    const p = finished();
+    const p = current();
     m.querySelector('#pb-unit').textContent = p ? `(${unitLabel(p)})` : '';
-    m.querySelector('#pb-recipe-note').textContent = r
+    m.querySelector('#pb-recipe-note').textContent = !p ? '' : r
       ? `Filled from the recipe (written for ${fmtQty(fromBase(p, r.output_qty))} ${unitLabel(p)}) and scaled to the quantity made. You can change any amount.`
       : 'No recipe for this product — add the ingredients used by hand.';
     if (!r) { editor.setRows([{ pid: '', typed: '' }]); dirty = false; syncReset(); return; }
@@ -1082,11 +1187,16 @@ function openBatchModal(recipes, onDone) {
     dirty = false; syncReset();
   }
 
-  sel.addEventListener('change', () => {
-    const r = recipe();
-    const p = finished();
-    qtyEl.value = r ? fromBase(p, r.output_qty) : '';
-    applyRecipe();
+  combo = productCombo(m.querySelector('#pb-pcombo'), 'pb', {
+    products: outputs, allowNew: !isStaff,
+    onChange: () => {
+      const r = recipe();
+      const p = current();
+      // Switching product starts from its standard batch size; a product with
+      // no recipe just clears the ingredients for hand entry.
+      if (r && p) qtyEl.value = fromBase(p, r.output_qty);
+      applyRecipe();
+    },
   });
   qtyEl.addEventListener('input', () => { if (recipe() && !dirty) applyRecipe(); });
   m.querySelector('#pb-reset').addEventListener('click', applyRecipe);
@@ -1100,33 +1210,31 @@ function openBatchModal(recipes, onDone) {
   }
   m.querySelector('#pb-loc').addEventListener('change', loadStock);
 
-  // Start on the first product that has a recipe, with its standard batch size.
-  const first = outputs[0];
-  sel.value = String(first.id);
-  if (recipeOf.has(first.id)) qtyEl.value = fromBase(first, recipeOf.get(first.id).output_qty);
-  applyRecipe();
+  // Start on the first product that has a recipe (if any), with its standard batch size.
+  if (outputs.length && recipeOf.has(outputs[0].id)) combo.setProduct(outputs[0]);
+  else editor.setRows([{ pid: '', typed: '' }]);
   loadStock();
 
   m.querySelector('#pb-save').addEventListener('click', async () => {
-    const p = finished();
     const typed = Number(qtyEl.value);
+    if (!combo.resolve()) return modalError('Choose or type what was made');
     if (!(typed > 0)) return modalError('Enter how much was made');
     if (editor.hasIncomplete()) return modalError('Every ingredient needs a product and a quantity — or remove the empty row');
-    const lines = editor.getLines();
-    if (!lines.length) return modalError('Add at least one ingredient used');
+    if (!editor.getLines().length) return modalError('Add at least one ingredient used');
     const date = m.querySelector('#pb-date').value;
-    const payload = {
-      location_id: Number(m.querySelector('#pb-loc').value),
-      product_id: p.id,
-      qty: toBase(p, typed),
-      batch_no: m.querySelector('#pb-batch').value,
-      note: m.querySelector('#pb-note').value,
-      ts: date ? new Date(date + 'T12:00:00').toISOString() : undefined,
-      lines,
-    };
     const btn = m.querySelector('#pb-save');
     btn.disabled = true;
     try {
+      const p = await ensureFinishedProduct(combo);
+      const payload = {
+        location_id: Number(m.querySelector('#pb-loc').value),
+        product_id: p.id,
+        qty: toBase(p, typed),
+        batch_no: m.querySelector('#pb-batch').value,
+        note: m.querySelector('#pb-note').value,
+        ts: date ? new Date(date + 'T12:00:00').toISOString() : undefined,
+        lines: editor.getLines(),
+      };
       const res = await api('/api/productions', { method: 'POST', body: JSON.stringify(payload) });
       closeModal();
       toast(res.status === 'pending' ? 'Submitted for admin approval' : 'Batch recorded — stock updated', 'success');
