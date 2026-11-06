@@ -350,3 +350,12 @@ input[type="checkbox"] { width: auto; }
   .topbar-right .btn { display: none; }
   main { padding: 16px; }
 }
+
+/* Production: ingredient rows in the recipe editor and record-batch form */
+.ing-list { display: grid; gap: 10px; }
+.ing-row { display: grid; grid-template-columns: minmax(0, 1fr) 110px 44px auto; gap: 8px; align-items: center; }
+.ing-row select, .ing-row input { width: 100%; }
+.ing-unit { color: var(--muted); font-size: 12.5px; }
+.ing-avail { grid-column: 1 / -1; margin-top: -4px; min-height: 0; }
+.ing-avail:empty { display: none; }
+@media (max-width: 560px) { .ing-row { grid-template-columns: minmax(0, 1fr) 90px auto; } .ing-unit { display: none; } }

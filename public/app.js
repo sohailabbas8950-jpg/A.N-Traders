@@ -268,6 +268,7 @@ const VIEWS = {
   stock: viewStock,
   movements: viewMovements,
   batches: viewBatches,
+  production: viewProduction,
   counts: viewCounts,
   consumption: viewConsumption,
   products: viewProducts,
@@ -283,7 +284,7 @@ const VIEWS = {
 // permission table for dashboard/batches/counts; this is convenience for
 // everything else, not the security boundary.
 const ADMIN_ONLY_NAV = ['locations', 'users', 'permissions'];
-const CONFIGURABLE_MODULES = ['dashboard', 'stock', 'movements', 'batches', 'counts', 'products', 'consumption'];
+const CONFIGURABLE_MODULES = ['dashboard', 'stock', 'movements', 'batches', 'production', 'counts', 'products', 'consumption'];
 
 function mayOpen(name) {
   if (!S.user) return false;
@@ -519,7 +520,7 @@ function movementsTable(rows, opts = {}) {
             : ''}${m.reviewed_at
             ? ` <span class="hint" title="${m.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(m.reviewed_by_name || 'admin')} on ${esc(fmtDateTime(m.reviewed_at))}">(reviewed)</span>`
             : ''}</td>
-          ${opts.actions ? `<td>${m.status === 'pending' ? `
+          ${opts.actions ? `<td>${m.production_id ? `<a class="hint" href="#/production">Batch #${m.production_id}</a>` : m.status === 'pending' ? `
             <button class="btn small primary" data-review="${m.id}">Review</button>
           ` : `
             <button class="btn small" data-edit="${m.id}">Edit</button>
@@ -581,8 +582,9 @@ async function viewMovements(view) {
       // filter would go unnoticed.
       api('/api/movements?status=pending&limit=1000').then((pd) => {
         const badge = view.querySelector('#pending-badge');
-        if (badge && pd.rows.length) {
-          badge.innerHTML = `<span class="pill pending">${pd.rows.length} pending approval${pd.rows.length === 1 ? '' : 's'}</span>`;
+        const pendingRows = pd.rows.filter((r) => !r.production_id); // batches are reviewed on the Production page
+        if (badge && pendingRows.length) {
+          badge.innerHTML = `<span class="pill pending">${pendingRows.length} pending approval${pendingRows.length === 1 ? '' : 's'}</span>`;
         } else if (badge) {
           badge.innerHTML = '';
         }
@@ -867,6 +869,359 @@ function openMovementModal(preset, onDone, editing, approving) {
       }
     });
   }
+}
+
+// ------------------------------------------------------------ production
+//
+// Recipes + production batches. Recording a batch writes ordinary movements
+// on the server (an Issue per ingredient, one Receive for what was made), so
+// nothing else in the app needs to know about it.
+
+// Quantities are typed in a product's entry unit (e.g. ML) when it has one,
+// but stored and sent to the server in its stock unit (e.g. Kg).
+const usesEntry = (p) => !!(p && p.entry_unit && p.entry_factor > 0);
+const unitLabel = (p) => (usesEntry(p) ? p.entry_unit : (p ? p.unit : ''));
+const toBase = (p, typed) => (usesEntry(p) ? typed / p.entry_factor : typed);
+const fromBase = (p, base) => round4(usesEntry(p) ? base * p.entry_factor : base);
+
+function prodLabel(p) { return `${p.sku} — ${p.name}`; }
+
+// A list of ingredient rows (product + quantity) used by both the recipe
+// editor and the record-batch form. `products` are the choosable products;
+// a row whose product isn't in that list (e.g. since deactivated) can pass
+// its own product object via `extra`.
+function ingredientEditor(host, { products, onEdit }) {
+  let rows = [];
+  let stock = null; // Map(product id -> base qty on hand) when known
+  const all = [...products];
+  const byId = (id) => all.find((p) => String(p.id) === String(id));
+
+  const availHtml = (r) => {
+    const p = byId(r.pid);
+    if (!stock || !p) return '';
+    const have = stock.get(p.id) || 0;
+    const need = toBase(p, Number(r.typed) || 0);
+    const short = need > have + 1e-9;
+    return `<span style="${short ? 'color:var(--danger);font-weight:600' : ''}">Available: ${fmtQty(fromBase(p, have))} ${esc(unitLabel(p))}${short ? ' — not enough' : ''}</span>`;
+  };
+
+  const render = () => {
+    host.innerHTML = `<div class="ing-list">${rows.map((r, i) => {
+      const p = byId(r.pid);
+      return `<div class="ing-row" data-i="${i}">
+        <select data-f="pid"><option value="">Choose ingredient…</option>${all.map((x) =>
+          `<option value="${x.id}" ${String(x.id) === String(r.pid) ? 'selected' : ''}>${esc(prodLabel(x))}</option>`).join('')}</select>
+        <input type="number" step="any" min="0" data-f="qty" value="${esc(r.typed)}" placeholder="Qty">
+        <span class="ing-unit">${esc(p ? unitLabel(p) : '')}</span>
+        <button type="button" class="btn small danger" data-rm="${i}" title="Remove">✕</button>
+        <div class="hint ing-avail">${availHtml(r)}</div>
+      </div>`;
+    }).join('')}</div>`;
+    host.querySelectorAll('.ing-row').forEach((row) => {
+      const i = Number(row.dataset.i);
+      row.querySelector('[data-f=pid]').addEventListener('change', (e) => {
+        rows[i].pid = e.target.value;
+        render();
+        if (onEdit) onEdit();
+      });
+      row.querySelector('[data-f=qty]').addEventListener('input', (e) => {
+        rows[i].typed = e.target.value;
+        row.querySelector('.ing-avail').innerHTML = availHtml(rows[i]);
+        if (onEdit) onEdit();
+      });
+      row.querySelector('[data-rm]').addEventListener('click', () => {
+        rows.splice(i, 1);
+        render();
+        if (onEdit) onEdit();
+      });
+    });
+  };
+
+  return {
+    setRows(next) { rows = next.map((r) => ({ pid: String(r.pid || ''), typed: r.typed === '' || r.typed == null ? '' : String(r.typed) })); render(); },
+    addRow() { rows.push({ pid: '', typed: '' }); render(); if (onEdit) onEdit(); },
+    // Updates the "Available" hints in place -- re-rendering the rows here
+    // would steal focus from (and could interrupt) someone already typing.
+    setStock(map) {
+      stock = map;
+      host.querySelectorAll('.ing-row').forEach((row) => {
+        row.querySelector('.ing-avail').innerHTML = availHtml(rows[Number(row.dataset.i)]);
+      });
+    },
+    // Quantities converted to the stock unit, blank rows skipped.
+    getLines() {
+      return rows.filter((r) => r.pid && Number(r.typed) > 0)
+        .map((r) => ({ product_id: Number(r.pid), qty: toBase(byId(r.pid), Number(r.typed)) }));
+    },
+    hasIncomplete() { return rows.some((r) => (r.pid && !(Number(r.typed) > 0)) || (!r.pid && r.typed !== '')); },
+    registerProduct(p) { if (!byId(p.id)) all.push(p); },
+  };
+}
+
+// A recipe item/row from the API carries its own unit info, so it can stand in
+// for a product that is no longer in the active product list.
+const asProduct = (it) => ({ id: it.product_id, sku: it.sku, name: it.name || it.product_name, unit: it.unit, entry_unit: it.entry_unit, entry_factor: it.entry_factor });
+
+function openRecipeModal(recipe, recipes, onDone) {
+  const taken = new Set(recipes.filter((r) => !recipe || r.id !== recipe.id).map((r) => r.product_id));
+  let choices = S.products.filter((p) => !taken.has(p.id));
+  if (recipe && !choices.some((p) => p.id === recipe.product_id)) choices = [asProduct(recipe), ...choices];
+  if (!choices.length) return toast('Every product already has a recipe', 'error');
+
+  const m = openModal(recipe ? 'Edit recipe' : 'New recipe', `
+    <p class="page-sub">List what goes into one batch of the finished product. When a batch is recorded, these quantities are filled in (scaled to the amount made) and can still be adjusted.</p>
+    <div class="form-grid">
+      <label class="full">Finished product
+        <select id="rc-product" ${recipe ? 'disabled' : ''}>${choices.map((p) =>
+          `<option value="${p.id}">${esc(prodLabel(p))}</option>`).join('')}</select></label>
+      <label>Batch size this recipe is written for <span class="hint" id="rc-unit"></span>
+        <input type="number" id="rc-size" step="any" min="0" placeholder="e.g. 100"></label>
+      <label class="full">Note <span class="hint">optional</span>
+        <textarea id="rc-note" rows="2"></textarea></label>
+    </div>
+    <h4 style="margin:18px 0 8px">Ingredients</h4>
+    <div id="rc-ings"></div>
+    <button type="button" class="btn small" id="rc-add" style="margin-top:8px">+ Add ingredient</button>`,
+    `<button class="btn" data-close>Cancel</button>
+     <button class="btn primary" id="rc-save">${recipe ? 'Save recipe' : 'Create recipe'}</button>`);
+
+  const editor = ingredientEditor(m.querySelector('#rc-ings'), { products: S.products });
+  const sel = m.querySelector('#rc-product');
+  const finished = () => choices.find((p) => String(p.id) === sel.value);
+  const syncUnit = () => { const p = finished(); m.querySelector('#rc-unit').textContent = p ? `(${unitLabel(p)})` : ''; };
+  sel.addEventListener('change', syncUnit);
+
+  if (recipe) {
+    sel.value = String(recipe.product_id);
+    m.querySelector('#rc-size').value = fromBase(recipe, recipe.output_qty);
+    m.querySelector('#rc-note').value = recipe.note || '';
+    recipe.items.forEach((it) => editor.registerProduct(asProduct(it)));
+    editor.setRows(recipe.items.map((it) => ({ pid: it.product_id, typed: fromBase(it, it.qty) })));
+  } else {
+    editor.setRows([{ pid: '', typed: '' }]);
+  }
+  syncUnit();
+  m.querySelector('#rc-add').addEventListener('click', () => editor.addRow());
+
+  m.querySelector('#rc-save').addEventListener('click', async () => {
+    const p = finished();
+    const size = Number(m.querySelector('#rc-size').value);
+    if (!(size > 0)) return modalError('Enter the batch size this recipe is written for');
+    if (editor.hasIncomplete()) return modalError('Every ingredient needs a product and a quantity — or remove the empty row');
+    const items = editor.getLines();
+    if (!items.length) return modalError('Add at least one ingredient');
+    const payload = { product_id: p.id, output_qty: toBase(p, size), note: m.querySelector('#rc-note').value, items };
+    const btn = m.querySelector('#rc-save');
+    btn.disabled = true;
+    try {
+      await api(recipe ? '/api/recipes/' + recipe.id : '/api/recipes', { method: recipe ? 'PUT' : 'POST', body: JSON.stringify(payload) });
+      closeModal();
+      toast('Recipe saved', 'success');
+      onDone();
+    } catch (ex) { btn.disabled = false; modalError(ex.message); }
+  });
+}
+
+function openBatchModal(recipes, onDone) {
+  const writable = writableLocations();
+  if (!writable.length) return toast('You are not assigned to a location yet', 'error');
+  if (!S.products.length) return toast('Add a product first', 'error');
+  const isStaff = S.user.role === 'staff';
+  const recipeOf = new Map(recipes.map((r) => [r.product_id, r]));
+  const outputs = [...S.products].sort((a, b) => (recipeOf.has(b.id) ? 1 : 0) - (recipeOf.has(a.id) ? 1 : 0));
+
+  const m = openModal('Record production batch', `
+    ${isStaff ? '<p class="page-sub">This will be sent to the admin for approval. Stock only changes once it is approved.</p>' : ''}
+    <div class="form-grid">
+      <label class="full">What was made
+        <select id="pb-product">${outputs.map((p) =>
+          `<option value="${p.id}">${esc(prodLabel(p))}${recipeOf.has(p.id) ? '  ✓ recipe' : ''}</option>`).join('')}</select></label>
+      <label>Quantity made <span class="hint" id="pb-unit"></span>
+        <input type="number" id="pb-qty" step="any" min="0" placeholder="0"></label>
+      <label>Location
+        <select id="pb-loc">${writable.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('')}</select></label>
+      <label>Date <input type="date" id="pb-date" value="${todayStr()}"></label>
+      <label>Batch number <span class="hint">optional</span>
+        <input id="pb-batch" placeholder="e.g. VF-2411-01"></label>
+      <label class="full">Note <span class="hint">optional</span>
+        <textarea id="pb-note" rows="2"></textarea></label>
+    </div>
+    <div style="display:flex;align-items:center;margin:18px 0 8px">
+      <h4 style="margin:0">Ingredients used</h4><div class="spacer" style="margin-left:auto"></div>
+      <button type="button" class="btn small ghost hidden" id="pb-reset">Reset to recipe</button>
+    </div>
+    <p class="page-sub" id="pb-recipe-note" style="margin:0 0 8px"></p>
+    <div id="pb-ings"></div>
+    <button type="button" class="btn small" id="pb-add" style="margin-top:8px">+ Add ingredient</button>`,
+    `<button class="btn" data-close>Cancel</button>
+     <button class="btn primary" id="pb-save">${isStaff ? 'Submit for approval' : 'Record batch'}</button>`);
+
+  let dirty = false; // true once someone hand-edits the ingredient rows
+  const editor = ingredientEditor(m.querySelector('#pb-ings'), { products: S.products, onEdit: () => { dirty = true; syncReset(); } });
+  const sel = m.querySelector('#pb-product');
+  const qtyEl = m.querySelector('#pb-qty');
+  const finished = () => S.products.find((p) => String(p.id) === sel.value);
+  const recipe = () => recipeOf.get(Number(sel.value));
+
+  function syncReset() {
+    m.querySelector('#pb-reset').classList.toggle('hidden', !(recipe() && dirty));
+  }
+
+  function applyRecipe() {
+    const r = recipe();
+    const p = finished();
+    m.querySelector('#pb-unit').textContent = p ? `(${unitLabel(p)})` : '';
+    m.querySelector('#pb-recipe-note').textContent = r
+      ? `Filled from the recipe (written for ${fmtQty(fromBase(p, r.output_qty))} ${unitLabel(p)}) and scaled to the quantity made. You can change any amount.`
+      : 'No recipe for this product — add the ingredients used by hand.';
+    if (!r) { editor.setRows([{ pid: '', typed: '' }]); dirty = false; syncReset(); return; }
+    const made = toBase(p, Number(qtyEl.value) || 0);
+    const scale = made > 0 ? made / r.output_qty : 0;
+    r.items.forEach((it) => editor.registerProduct(asProduct(it)));
+    editor.setRows(r.items.map((it) => ({ pid: it.product_id, typed: scale > 0 ? fromBase(it, it.qty * scale) : '' })));
+    dirty = false; syncReset();
+  }
+
+  sel.addEventListener('change', () => {
+    const r = recipe();
+    const p = finished();
+    qtyEl.value = r ? fromBase(p, r.output_qty) : '';
+    applyRecipe();
+  });
+  qtyEl.addEventListener('input', () => { if (recipe() && !dirty) applyRecipe(); });
+  m.querySelector('#pb-reset').addEventListener('click', applyRecipe);
+  m.querySelector('#pb-add').addEventListener('click', () => editor.addRow());
+
+  async function loadStock() {
+    try {
+      const d = await api('/api/stock?location=' + m.querySelector('#pb-loc').value);
+      editor.setStock(new Map(d.rows.map((x) => [x.id, Number(x.total_qty) || 0])));
+    } catch { /* availability hints are a convenience only */ }
+  }
+  m.querySelector('#pb-loc').addEventListener('change', loadStock);
+
+  // Start on the first product that has a recipe, with its standard batch size.
+  const first = outputs[0];
+  sel.value = String(first.id);
+  if (recipeOf.has(first.id)) qtyEl.value = fromBase(first, recipeOf.get(first.id).output_qty);
+  applyRecipe();
+  loadStock();
+
+  m.querySelector('#pb-save').addEventListener('click', async () => {
+    const p = finished();
+    const typed = Number(qtyEl.value);
+    if (!(typed > 0)) return modalError('Enter how much was made');
+    if (editor.hasIncomplete()) return modalError('Every ingredient needs a product and a quantity — or remove the empty row');
+    const lines = editor.getLines();
+    if (!lines.length) return modalError('Add at least one ingredient used');
+    const date = m.querySelector('#pb-date').value;
+    const payload = {
+      location_id: Number(m.querySelector('#pb-loc').value),
+      product_id: p.id,
+      qty: toBase(p, typed),
+      batch_no: m.querySelector('#pb-batch').value,
+      note: m.querySelector('#pb-note').value,
+      ts: date ? new Date(date + 'T12:00:00').toISOString() : undefined,
+      lines,
+    };
+    const btn = m.querySelector('#pb-save');
+    btn.disabled = true;
+    try {
+      const res = await api('/api/productions', { method: 'POST', body: JSON.stringify(payload) });
+      closeModal();
+      toast(res.status === 'pending' ? 'Submitted for admin approval' : 'Batch recorded — stock updated', 'success');
+      onDone();
+    } catch (ex) { btn.disabled = false; modalError(ex.message); }
+  });
+}
+
+async function viewProduction(view, isCurrent) {
+  const isAdmin = S.user.role === 'admin';
+  const canManageRecipes = S.user.role !== 'staff';
+  const [pd, rd] = await Promise.all([api('/api/productions'), api('/api/recipes')]);
+  if (!isCurrent()) return;
+  const batches = pd.rows;
+  const recipes = rd.rows;
+  const pendingCount = batches.filter((b) => b.status === 'pending').length;
+
+  const qtyText = (p, base) => `${fmtQty(fromBase(p, base))} ${unitLabel(p)}`;
+  const statusPill = (s) => (s === 'pending' ? '<span class="pill pending">Pending approval</span>'
+    : s === 'rejected' ? '<span class="pill rejected">Rejected</span>' : '<span class="pill ok">Approved</span>');
+
+  view.innerHTML = `
+    <div class="page-head">
+      <div><h2>Production</h2>
+        <p class="page-sub">Record a batch and its ingredients are deducted from stock automatically</p></div>
+      <div class="spacer"></div>
+      ${isAdmin && pendingCount ? `<span class="pill pending">${pendingCount} pending approval${pendingCount === 1 ? '' : 's'}</span>` : ''}
+      <button class="btn primary" id="new-batch">Record batch</button>
+    </div>
+    <div class="card"><div class="card-head">Batches</div><div class="table-wrap">${
+      !batches.length ? '<div class="empty">No batches recorded yet.</div>' : `
+      <table>
+        <thead><tr><th>Date</th><th>Batch</th><th>Made</th><th class="num">Qty</th><th>Location</th>
+          <th>Ingredients used</th><th>Status</th><th>By</th>${isAdmin ? '<th></th>' : ''}</tr></thead>
+        <tbody>${batches.map((b) => `
+          <tr>
+            <td style="color:var(--muted)">${fmtDateTime(b.ts)}</td>
+            <td class="mono">#${b.id}${b.batch_no ? `<div class="hint">${esc(b.batch_no)}</div>` : ''}</td>
+            <td class="wrap"><strong>${esc(b.product_name)}</strong><div class="hint mono">${esc(b.sku)}</div></td>
+            <td class="num"><strong>${esc(qtyText(b, b.qty))}</strong></td>
+            <td>${esc(b.location_name)}</td>
+            <td class="wrap">${b.lines.map((l) => `<div>${esc(l.name)} — ${esc(qtyText(l, l.qty))}</div>`).join('') || '—'}</td>
+            <td>${statusPill(b.status)}</td>
+            <td style="color:var(--muted)">${esc(b.user_name || '—')}${b.reviewed_at
+              ? ` <span class="hint" title="${b.status === 'rejected' ? 'Rejected' : 'Approved'} by ${esc(b.reviewed_by_name || 'admin')} on ${esc(fmtDateTime(b.reviewed_at))}">(reviewed)</span>` : ''}</td>
+            ${isAdmin ? `<td style="white-space:nowrap">${b.status === 'pending' ? `
+              <button class="btn small primary" data-approve="${b.id}">Approve</button>
+              <button class="btn small danger" data-reject="${b.id}">Reject</button>` : `
+              <button class="btn small danger" data-undo="${b.id}">Delete</button>`}</td>` : ''}
+          </tr>`).join('')}
+        </tbody></table>`}</div></div>
+
+    <div class="card" style="margin-top:18px"><div class="card-head">Recipes
+      <div class="spacer"></div>
+      ${canManageRecipes ? '<button class="btn small" id="new-recipe">New recipe</button>' : ''}</div>
+      <div class="table-wrap">${
+      !recipes.length ? `<div class="empty">No recipes yet.${canManageRecipes ? ' Add one so recording a batch fills in the ingredients for you.' : ''}</div>` : `
+      <table>
+        <thead><tr><th>Product</th><th class="num">Batch size</th><th>Ingredients</th>${canManageRecipes ? '<th></th>' : ''}</tr></thead>
+        <tbody>${recipes.map((r) => `
+          <tr>
+            <td class="wrap"><strong>${esc(r.product_name)}</strong><div class="hint mono">${esc(r.sku)}</div></td>
+            <td class="num">${esc(qtyText(r, r.output_qty))}</td>
+            <td class="wrap">${r.items.map((it) => `<div>${esc(it.name)} — ${esc(qtyText(it, it.qty))}</div>`).join('')}</td>
+            ${canManageRecipes ? `<td style="white-space:nowrap">
+              <button class="btn small" data-edit-recipe="${r.id}">Edit</button>
+              <button class="btn small danger" data-del-recipe="${r.id}">Delete</button></td>` : ''}
+          </tr>`).join('')}
+        </tbody></table>`}</div></div>`;
+
+  const reload = () => render();
+  const act = async (url, opts, okMsg) => {
+    try { await api(url, opts); toast(okMsg, 'success'); reload(); } catch (ex) { toast(ex.message, 'error'); }
+  };
+  view.querySelector('#new-batch').addEventListener('click', () => openBatchModal(recipes, reload));
+  const newRecipe = view.querySelector('#new-recipe');
+  if (newRecipe) newRecipe.addEventListener('click', () => openRecipeModal(null, recipes, reload));
+  view.querySelectorAll('[data-edit-recipe]').forEach((b) => b.addEventListener('click', () =>
+    openRecipeModal(recipes.find((r) => String(r.id) === b.dataset.editRecipe), recipes, reload)));
+  view.querySelectorAll('[data-del-recipe]').forEach((b) => b.addEventListener('click', () => {
+    if (!confirm('Delete this recipe? Batches already recorded are not affected.')) return;
+    act('/api/recipes/' + b.dataset.delRecipe, { method: 'DELETE' }, 'Recipe deleted');
+  }));
+  view.querySelectorAll('[data-approve]').forEach((b) => b.addEventListener('click', () => {
+    if (!confirm('Approve this batch? Its ingredients will be deducted and the finished product added to stock.')) return;
+    act(`/api/productions/${b.dataset.approve}/approve`, { method: 'POST', body: '{}' }, 'Batch approved');
+  }));
+  view.querySelectorAll('[data-reject]').forEach((b) => b.addEventListener('click', () => {
+    if (!confirm('Reject this batch? It will never affect stock.')) return;
+    act(`/api/productions/${b.dataset.reject}/reject`, { method: 'POST', body: '{}' }, 'Batch rejected');
+  }));
+  view.querySelectorAll('[data-undo]').forEach((b) => b.addEventListener('click', () => {
+    if (!confirm('Delete this batch? All of its movements are removed and stock goes back to how it was before.')) return;
+    act('/api/productions/' + b.dataset.undo, { method: 'DELETE' }, 'Batch deleted');
+  }));
 }
 
 // ------------------------------------------------------------ batches
@@ -2062,7 +2417,7 @@ function openUserModal(u) {
 
 const MODULE_LABEL = {
   dashboard: 'Dashboard', stock: 'Stock', movements: 'Movements',
-  batches: 'Batches', counts: 'Stock counts', products: 'Products',
+  batches: 'Batches', production: 'Production', counts: 'Stock counts', products: 'Products',
   consumption: 'Consumption',
 };
 
