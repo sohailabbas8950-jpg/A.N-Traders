@@ -1044,16 +1044,8 @@ async function ensureFinishedProduct(combo) {
   if (res.invalid) throw new Error('That product isn\'t in the list — ask an admin to add it');
   const f = combo.newFields();
   if (!f.sku.trim()) throw new Error('Enter a SKU for the new product');
-  let cat = S.categories.find((c) => /finished/i.test(c.name));
-  if (!cat) {
-    try {
-      const r = await api('/api/categories', { method: 'POST', body: JSON.stringify({ name: 'Finished Goods' }) });
-      cat = { id: r.id, name: 'Finished Goods' };
-      S.categories.push(cat);
-    } catch { cat = null; }
-  }
   const r = await api('/api/products', { method: 'POST', body: JSON.stringify({
-    sku: f.sku.trim(), name: res.newName, unit: f.unit, category_id: cat ? cat.id : null, cost_price: 0, sale_price: 0,
+    sku: f.sku.trim(), name: res.newName, unit: f.unit, category_id: await finishedCategoryId(), cost_price: 0, sale_price: 0,
   }) });
   await refreshProducts();
   const made = S.products.find((p) => p.id === r.id);
@@ -1243,6 +1235,118 @@ function openBatchModal(recipes, onDone) {
   });
 }
 
+// Finished goods live in their own category so they stay apart from raw materials.
+async function finishedCategoryId() {
+  let cat = S.categories.find((c) => /finished/i.test(c.name));
+  if (!cat) {
+    try {
+      const r = await api('/api/categories', { method: 'POST', body: JSON.stringify({ name: 'Finished Goods' }) });
+      cat = { id: r.id, name: 'Finished Goods' };
+      S.categories.push(cat);
+    } catch { cat = null; }
+  }
+  return cat ? cat.id : null;
+}
+
+const FINISHED_LIST = ["Zeeper Pro 101", "Zeeper 114", "Zeeper Carpet Shampoo", "Zeeper Floor Wash Soap", "Zeeper SS Cream Cleaner", "Zeeper Hand Sanitizer", "Zeeper Ultra Guard", "Zeeper Liquid Pinax", "Zeeper Antibacterial Hand Wash Soap", "Zeeper Furniture Polish", "Zeeper Air Freshener", "Zeeper Glass Cleaner", "Zeeper Floor Guard", "Zeeper Oven Cleaner", "Zeeper Vera Foam", "Zeeper Chlorine", "Zeeper Silver Polish Cleaner", "Zeeper All Purpose Cleaner", "Zeeper GP Cleaner", "Zeeper Dip It Plus", "Zeeper Grease Cutter", "Zeeper Hand Foam Soap", "Zeeper V Foam Max", "Zeeper 505", "Zeeper Hard", "Zeeper Kraft", "Zeeper Dry", "Zeeper Chlorine Tablet", "Zeeper Chafing Gel", "Zeeper Pro Lux", "Zeeper Builder", "Zeeper Laundry Soap", "Zeeper E-Sour", "Zeeper Fabric Conditioner", "Zeeper Colour Bleach", "Zeeper Bleach", "Zeeper Pro 100", "Zeeper Liquid Starch", "Zeeper Detergent", "Zeeper Ink Go – Ink Stain Remover", "Zeeper Rust Remover", "Zeeper Go Remover", "Zeeper Go Extra", "Zeeper Bright Max", "Zeeper Algaecide", "Zeeper Aquaklar Pool", "Zeeper Pool Decalar", "Sodium Bisulfate", "TCCA 90%", "Zeeper Pro Pool 510"];
+const FINISHED_KG = ['zeeper chlorine','zeeper chlorine tablet','zeeper detergent','sodium bisulfate','tcca 90%'];
+const FINISHED_PIECE = ['zeeper chafing gel'];
+
+// Paste a list of product names, pick a unit for each, add them all at once.
+function openBulkProductsModal(onDone) {
+  const UNITS = [['Ltr', 'Litre'], ['Kg', 'Kg'], ['Piece', 'Piece']];
+  const chosen = new Map(); // lowercase name -> unit label, so edits to the list keep earlier choices
+  const existing = new Set(S.products.map((p) => String(p.name).trim().toLowerCase()));
+
+  const m = openModal('Add finished products', `
+    <p class="page-sub">Choose Kg, Ltr or Piece for each product (starting units are guesses — change any). Edit the list or paste more names, one per line. They're added as finished goods.</p>
+    <label>Product names <span class="hint">one per line</span>
+      <textarea id="bp-text" rows="3" placeholder="Zeeper Glass Cleaner&#10;Zeeper Floor Guard"></textarea></label>
+    <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin:14px 0 6px">
+      <strong style="font-size:13px">Set all to</strong>
+      ${UNITS.map(([l]) => `<button type="button" class="btn small" data-all="${l}">${l}</button>`).join('')}
+      <span class="spacer" style="margin-left:auto"></span>
+      <span class="hint" id="bp-count"></span>
+    </div>
+    <div id="bp-rows" style="max-height:45vh;overflow:auto"></div>`,
+    `<button class="btn" data-close>Cancel</button>
+     <button class="btn primary" id="bp-save">Add products</button>`);
+
+  const textEl = m.querySelector('#bp-text');
+  // Start with the usual finished-goods list (skipping ones already added); units are starting guesses to change.
+  FINISHED_LIST.filter((n) => !existing.has(n.toLowerCase())).forEach((n) => {
+    const k = n.toLowerCase();
+    chosen.set(k, FINISHED_KG.includes(k) ? 'Kg' : FINISHED_PIECE.includes(k) ? 'Piece' : 'Ltr');
+  });
+  textEl.value = FINISHED_LIST.filter((n) => !existing.has(n.toLowerCase())).join('\n');
+  const rowsEl = m.querySelector('#bp-rows');
+  const parse = () => {
+    const seen = new Set();
+    const out = [];
+    for (const line of textEl.value.split(/\r?\n/)) {
+      const name = line.replace(/^\s*\d+[.)]\s+/, '').trim();
+      const key = name.toLowerCase();
+      if (!name || seen.has(key)) continue;
+      seen.add(key);
+      out.push({ name, key, exists: existing.has(key) });
+    }
+    return out;
+  };
+
+  const render = () => {
+    const items = parse();
+    rowsEl.innerHTML = items.length ? items.map((it, i) => `
+      <div class="bp-row" style="display:flex;align-items:center;gap:10px;padding:6px 0;border-bottom:1px solid var(--line, #e5e9ee)">
+        <span style="width:26px;text-align:right;color:var(--muted)">${i + 1}.</span>
+        <span style="flex:1;min-width:0">${esc(it.name)}${it.exists ? ' <span class="pill muted">already exists — skipped</span>' : ''}</span>
+        <select data-k="${esc(it.key)}" ${it.exists ? 'disabled' : ''} style="width:96px">${UNITS.map(([l]) =>
+          `<option ${(chosen.get(it.key) || 'Ltr') === l ? 'selected' : ''}>${l}</option>`).join('')}</select>
+      </div>`).join('') : '<div class="empty" style="padding:18px">Nothing to add yet.</div>';
+    const fresh = items.filter((x) => !x.exists).length;
+    m.querySelector('#bp-count').textContent = items.length ? `${fresh} to add` : '';
+    rowsEl.querySelectorAll('select[data-k]').forEach((s) => s.addEventListener('change', () => chosen.set(s.dataset.k, s.value)));
+  };
+  textEl.addEventListener('input', render);
+  m.querySelectorAll('[data-all]').forEach((b) => b.addEventListener('click', () => {
+    parse().forEach((it) => chosen.set(it.key, b.dataset.all));
+    render();
+  }));
+  render();
+
+  m.querySelector('#bp-save').addEventListener('click', async () => {
+    const todo = parse().filter((x) => !x.exists);
+    if (!todo.length) return modalError('Add at least one new product name');
+    const btn = m.querySelector('#bp-save');
+    btn.disabled = true;
+    const used = new Set(S.products.map((p) => String(p.sku).toUpperCase()));
+    let n = 0;
+    const nextSku = () => { do { n++; } while (used.has('FG-' + String(n).padStart(3, '0'))); const s = 'FG-' + String(n).padStart(3, '0'); used.add(s); return s; };
+    let added = 0;
+    const failed = [];
+    try {
+      const catId = await finishedCategoryId();
+      for (const it of todo) {
+        const unitLabel = chosen.get(it.key) || 'Ltr';
+        const unit = (UNITS.find(([l]) => l === unitLabel) || UNITS[0])[1];
+        try {
+          await api('/api/products', { method: 'POST', body: JSON.stringify({ sku: nextSku(), name: it.name, unit, category_id: catId, cost_price: 0, sale_price: 0 }) });
+          added++;
+        } catch (ex) { failed.push(`${it.name} (${ex.message})`); }
+      }
+      await refreshProducts();
+    } catch (ex) { btn.disabled = false; return modalError(ex.message); }
+    if (failed.length) {
+      btn.disabled = false;
+      modalError(`Added ${added}. Couldn't add: ${failed.join('; ')}`);
+      if (added) onDone();
+      return;
+    }
+    closeModal();
+    toast(`${added} product${added === 1 ? '' : 's'} added`, 'success');
+    onDone();
+  });
+}
+
 async function viewProduction(view, isCurrent) {
   const isAdmin = S.user.role === 'admin';
   const canManageRecipes = S.user.role !== 'staff';
@@ -1262,6 +1366,7 @@ async function viewProduction(view, isCurrent) {
         <p class="page-sub">Record a batch and its ingredients are deducted from stock automatically</p></div>
       <div class="spacer"></div>
       ${isAdmin && pendingCount ? `<span class="pill pending">${pendingCount} pending approval${pendingCount === 1 ? '' : 's'}</span>` : ''}
+      ${canManageRecipes ? '<button class="btn" id="bulk-products">Add finished products</button>' : ''}
       <button class="btn primary" id="new-batch">Record batch</button>
     </div>
     <div class="card"><div class="card-head">Batches</div><div class="table-wrap">${
@@ -1310,6 +1415,8 @@ async function viewProduction(view, isCurrent) {
     try { await api(url, opts); toast(okMsg, 'success'); reload(); } catch (ex) { toast(ex.message, 'error'); }
   };
   view.querySelector('#new-batch').addEventListener('click', () => openBatchModal(recipes, reload));
+  const bulk = view.querySelector('#bulk-products');
+  if (bulk) bulk.addEventListener('click', () => openBulkProductsModal(reload));
   const newRecipe = view.querySelector('#new-recipe');
   if (newRecipe) newRecipe.addEventListener('click', () => openRecipeModal(null, recipes, reload));
   view.querySelectorAll('[data-edit-recipe]').forEach((b) => b.addEventListener('click', () =>
