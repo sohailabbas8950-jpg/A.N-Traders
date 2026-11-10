@@ -1054,7 +1054,7 @@ async function ensureFinishedProduct(combo) {
 }
 
 function openRecipeModal(recipe, recipes, onDone) {
-  const taken = new Set(recipes.filter((r) => !recipe || r.id !== recipe.id).map((r) => r.product_id));
+  const others = recipes.filter((r) => !recipe || r.id !== recipe.id);
   const known = [...S.products];
   if (recipe && !known.some((p) => p.id === recipe.product_id)) known.unshift(asProduct(recipe));
 
@@ -1064,6 +1064,8 @@ function openRecipeModal(recipe, recipes, onDone) {
       <div class="full" id="rc-pcombo"></div>
       <label>Batch size this recipe is written for <span class="hint" id="rc-unit"></span>
         <input type="number" id="rc-size" step="any" min="0" placeholder="e.g. 100"></label>
+      <label>Variation name <span class="hint">optional</span>
+        <input id="rc-label" maxlength="60" placeholder="e.g. Standard, Thick, Summer"></label>
       <label class="full">Note <span class="hint">optional</span>
         <textarea id="rc-note" rows="2"></textarea></label>
     </div>
@@ -1087,6 +1089,7 @@ function openRecipeModal(recipe, recipes, onDone) {
     combo.setProduct(known.find((p) => p.id === recipe.product_id));
     m.querySelector('#rc-size').value = fromBase(recipe, recipe.output_qty);
     m.querySelector('#rc-note').value = recipe.note || '';
+    m.querySelector('#rc-label').value = recipe.label || '';
     recipe.items.forEach((it) => editor.registerProduct(asProduct(it)));
     editor.setRows(recipe.items.map((it) => ({ pid: it.product_id, typed: fromBase(it, it.qty) })));
   } else {
@@ -1099,15 +1102,17 @@ function openRecipeModal(recipe, recipes, onDone) {
     const size = Number(m.querySelector('#rc-size').value);
     const res = combo.resolve();
     if (!res) return modalError('Choose or type the finished product');
-    if (res.product && taken.has(res.product.id)) return modalError('That product already has a recipe — edit that one instead');
     if (!(size > 0)) return modalError('Enter the batch size this recipe is written for');
+    if (res.product && others.some((r) => r.product_id === res.product.id && Math.abs(fromBase(r, r.output_qty) - size) < 1e-9)) {
+      return modalError('That product already has a recipe for this batch size — edit that one, or use a different size');
+    }
     if (editor.hasIncomplete()) return modalError('Every ingredient needs a product and a quantity — or remove the empty row');
     if (!editor.getLines().length) return modalError('Add at least one ingredient');
     const btn = m.querySelector('#rc-save');
     btn.disabled = true;
     try {
       const p = await ensureFinishedProduct(combo);
-      const payload = { product_id: p.id, output_qty: toBase(p, size), note: m.querySelector('#rc-note').value, items: editor.getLines() };
+      const payload = { product_id: p.id, label: m.querySelector('#rc-label').value, output_qty: toBase(p, size), note: m.querySelector('#rc-note').value, items: editor.getLines() };
       await api(recipe ? '/api/recipes/' + recipe.id : '/api/recipes', { method: recipe ? 'PUT' : 'POST', body: JSON.stringify(payload) });
       closeModal();
       toast('Recipe saved', 'success');
@@ -1120,7 +1125,10 @@ function openBatchModal(recipes, onDone) {
   const writable = writableLocations();
   if (!writable.length) return toast('You are not assigned to a location yet', 'error');
   const isStaff = S.user.role === 'staff';
-  const recipeOf = new Map(recipes.map((r) => [r.product_id, r]));
+  const recipesOf = new Map();
+  for (const r of recipes) { if (!recipesOf.has(r.product_id)) recipesOf.set(r.product_id, []); recipesOf.get(r.product_id).push(r); }
+  const recipeOf = recipesOf; // has(id) = product has at least one recipe
+  const recipeName = (p, r) => `${fmtQty(fromBase(p, r.output_qty))} ${unitLabel(p)}${r.label ? ' — ' + r.label : ''}`;
   // Products with a recipe first, since those are the ones usually made.
   const outputs = [...S.products].sort((a, b) => (recipeOf.has(b.id) ? 1 : 0) - (recipeOf.has(a.id) ? 1 : 0));
   if (!outputs.length && isStaff) return toast('Add a product first', 'error');
@@ -1129,6 +1137,8 @@ function openBatchModal(recipes, onDone) {
     ${isStaff ? '<p class="page-sub">This will be sent to the admin for approval. Stock only changes once it is approved.</p>' : ''}
     <div class="form-grid">
       <div class="full" id="pb-pcombo"></div>
+      <label class="full hidden" id="pb-rwrap">Recipe
+        <select id="pb-recipe"></select></label>
       <label>Quantity made <span class="hint" id="pb-unit"></span>
         <input type="number" id="pb-qty" step="any" min="0" placeholder="0"></label>
       <label>Location
@@ -1158,10 +1168,20 @@ function openBatchModal(recipes, onDone) {
     const res = combo.resolve();
     return res ? (res.product || combo.pending()) : null;
   };
+  const recipeSel = m.querySelector('#pb-recipe');
   const recipe = () => {
     const p = current();
-    return p && p.id ? recipeOf.get(p.id) : undefined;
+    const list = p && p.id ? recipesOf.get(p.id) : undefined;
+    if (!list) return undefined;
+    return list.find((r) => String(r.id) === recipeSel.value) || list[0];
   };
+  // Fill the recipe picker for the chosen product; shown only when there is a choice.
+  function loadRecipeChoices() {
+    const p = current();
+    const list = (p && p.id && recipesOf.get(p.id)) || [];
+    recipeSel.innerHTML = list.map((r) => `<option value="${r.id}">${esc(recipeName(p, r))}</option>`).join('');
+    m.querySelector('#pb-rwrap').classList.toggle('hidden', list.length < 2);
+  }
   function syncReset() { m.querySelector('#pb-reset').classList.toggle('hidden', !(recipe() && dirty)); }
 
   function applyRecipe() {
@@ -1169,7 +1189,7 @@ function openBatchModal(recipes, onDone) {
     const p = current();
     m.querySelector('#pb-unit').textContent = p ? `(${unitLabel(p)})` : '';
     m.querySelector('#pb-recipe-note').textContent = !p ? '' : r
-      ? `Filled from the recipe (written for ${fmtQty(fromBase(p, r.output_qty))} ${unitLabel(p)}) and scaled to the quantity made. You can change any amount.`
+      ? `Filled from the ${r.label ? '"' + r.label + '" ' : ''}recipe (written for ${fmtQty(fromBase(p, r.output_qty))} ${unitLabel(p)}) and scaled to the quantity made. You can change any amount.`
       : 'No recipe for this product — add the ingredients used by hand.';
     if (!r) { editor.setRows([{ pid: '', typed: '' }]); dirty = false; syncReset(); return; }
     const made = toBase(p, Number(qtyEl.value) || 0);
@@ -1182,6 +1202,7 @@ function openBatchModal(recipes, onDone) {
   combo = productCombo(m.querySelector('#pb-pcombo'), 'pb', {
     products: outputs, allowNew: !isStaff,
     onChange: () => {
+      loadRecipeChoices();
       const r = recipe();
       const p = current();
       // Switching product starts from its standard batch size; a product with
@@ -1190,7 +1211,20 @@ function openBatchModal(recipes, onDone) {
       applyRecipe();
     },
   });
-  qtyEl.addEventListener('input', () => { if (recipe() && !dirty) applyRecipe(); });
+  qtyEl.addEventListener('input', () => {
+    // Typing a quantity that matches one of the product's recipes switches to that recipe.
+    const p = current();
+    const list = (p && p.id && recipesOf.get(p.id)) || [];
+    const made = toBase(p || {}, Number(qtyEl.value) || 0);
+    const exact = list.find((r) => Math.abs(r.output_qty - made) < 1e-9);
+    if (exact && String(exact.id) !== recipeSel.value && !dirty) recipeSel.value = String(exact.id);
+    if (recipe() && !dirty) applyRecipe();
+  });
+  recipeSel.addEventListener('change', () => {
+    const p = current(); const r = recipe();
+    if (p && r) qtyEl.value = fromBase(p, r.output_qty);
+    dirty = false; applyRecipe();
+  });
   m.querySelector('#pb-reset').addEventListener('click', applyRecipe);
   m.querySelector('#pb-add').addEventListener('click', () => editor.addRow());
 
@@ -1401,7 +1435,7 @@ async function viewProduction(view, isCurrent) {
         <thead><tr><th>Product</th><th class="num">Batch size</th><th>Ingredients</th>${canManageRecipes ? '<th></th>' : ''}</tr></thead>
         <tbody>${recipes.map((r) => `
           <tr>
-            <td class="wrap"><strong>${esc(r.product_name)}</strong><div class="hint mono">${esc(r.sku)}</div></td>
+            <td class="wrap"><strong>${esc(r.product_name)}</strong>${r.label ? ` <span class="pill muted">${esc(r.label)}</span>` : ''}<div class="hint mono">${esc(r.sku)}</div></td>
             <td class="num">${esc(qtyText(r, r.output_qty))}</td>
             <td class="wrap">${r.items.map((it) => `<div>${esc(it.name)} — ${esc(qtyText(it, it.qty))}</div>`).join('')}</td>
             ${canManageRecipes ? `<td style="white-space:nowrap">
