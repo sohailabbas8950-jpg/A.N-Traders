@@ -1426,7 +1426,7 @@ async function viewProduction(view, isCurrent) {
     act('/api/recipes/' + b.dataset.delRecipe, { method: 'DELETE' }, 'Recipe deleted');
   }));
   view.querySelectorAll('[data-approve]').forEach((b) => b.addEventListener('click', () => {
-    if (!confirm('Approve this batch? Its ingredients will be deducted and the finished product added to stock.')) return;
+    if (!confirm('Approve this batch? Its ingredients will be deducted from stock.')) return;
     act(`/api/productions/${b.dataset.approve}/approve`, { method: 'POST', body: '{}' }, 'Batch approved');
   }));
   view.querySelectorAll('[data-reject]').forEach((b) => b.addEventListener('click', () => {
