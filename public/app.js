@@ -657,6 +657,9 @@ function openMovementModal(preset, onDone, editing, approving) {
   })();
   const productOpts = productList
     .map((p) => `<option value="${p.id}">${esc(p.sku)} — ${esc(p.name)}</option>`).join('');
+  const productLabel = (p) => `${p.sku} — ${p.name}`;
+  const productDatalist = productList
+    .map((p) => `<option value="${esc(productLabel(p))}"></option>`).join('');
   const locOpts = (list) => list.map((l) => `<option value="${l.id}">${esc(l.name)}</option>`).join('');
   const allLocs = S.locations.filter((l) => l.active
     || (editing && (l.id === editing.from_location_id || l.id === editing.to_location_id)));
@@ -675,7 +678,9 @@ function openMovementModal(preset, onDone, editing, approving) {
       : editing ? '<p class="page-sub">Editing an existing entry — stock balances recalculate immediately on save.</p>' : ''}
     <div class="form-grid">
       <label class="full">Product
-        <select id="mv-product">${productOpts}</select></label>
+        <input id="mv-psearch" list="mv-plist" placeholder="Start typing a product…" autocomplete="off">
+        <datalist id="mv-plist">${productDatalist}</datalist>
+        <select id="mv-product" style="display:none" tabindex="-1">${productOpts}</select></label>
 
       <label id="wrap-from"><span id="from-label">From location</span>
         <select id="mv-from">${locOpts(writable)}</select></label>
@@ -770,16 +775,53 @@ function openMovementModal(preset, onDone, editing, approving) {
       : `${p.entry_factor} ${p.entry_unit} = 1 ${p.unit}`;
   }
 
-  m.querySelector('#mv-product').addEventListener('change', applyProduct);
+  // Type-to-search product box. The hidden <select id="mv-product"> stays the
+  // source of truth so the rest of this modal keeps working unchanged.
+  const psearch = m.querySelector('#mv-psearch');
+  const psel = m.querySelector('#mv-product');
+  const norm = (t) => String(t || '').trim().toLowerCase();
+  let pMatched = false;
+
+  function matchProduct(text) {
+    const t = norm(text);
+    if (!t) return null;
+    const exact = productList.filter((p) =>
+      norm(productLabel(p)) === t || norm(p.sku) === t || norm(p.name) === t);
+    if (exact.length === 1) return exact[0];
+    if (exact.length > 1) return null;
+    const part = productList.filter((p) => norm(productLabel(p)).includes(t));
+    return part.length === 1 ? part[0] : null;
+  }
+
+  function syncProductFromBox(normalise) {
+    const p = matchProduct(psearch.value);
+    pMatched = !!p;
+    psearch.classList.toggle('invalid', !p && !!psearch.value.trim());
+    if (p) {
+      if (psel.value !== String(p.id)) psel.value = String(p.id);
+      if (normalise) psearch.value = productLabel(p);
+      applyProduct();
+    }
+  }
+  psearch.addEventListener('input', () => syncProductFromBox(false));
+  psearch.addEventListener('change', () => syncProductFromBox(true));
+  psearch.addEventListener('focus', () => psearch.select());
+  psel.addEventListener('change', applyProduct);
   m.querySelector('#mv-qty').addEventListener('input', updateConversion);
 
   m.querySelectorAll('#kind-tabs button').forEach((b) =>
     b.addEventListener('click', () => applyKind(b.dataset.kind)));
   applyKind(kind);
+  {
+    const first = productList.find((p) => String(p.id) === psel.value);
+    if (first && editing) { psearch.value = productLabel(first); pMatched = true; }
+  }
   applyProduct();
 
   if (editing) {
     m.querySelector('#mv-product').value = editing.product_id;
+    const ep = productList.find((p) => p.id === editing.product_id);
+    if (ep) { psearch.value = productLabel(ep); pMatched = true; }
     applyProduct();
     m.querySelector('#mv-from').value = editing.from_location_id || '';
     m.querySelector('#mv-to').value = editing.to_location_id || '';
@@ -794,6 +836,8 @@ function openMovementModal(preset, onDone, editing, approving) {
     if (editCostInput) editCostInput.value = editing.unit_cost || '';
     updateConversion();
   }
+
+  if (!editing) setTimeout(() => psearch.focus(), 0);
 
   m.querySelector('#mv-save').addEventListener('click', async () => {
     const btn = m.querySelector('#mv-save');
@@ -824,6 +868,9 @@ function openMovementModal(preset, onDone, editing, approving) {
     const costInputEl = m.querySelector('#mv-cost');
     if (current === 'receive' && costInputEl && costInputEl.value !== '') {
       payload.unit_cost = Number(costInputEl.value);
+    }
+    if (!pMatched || !matchProduct(psearch.value)) {
+      return modalError('Choose a product from the list — keep typing until it appears');
     }
     if (!payload.qty) return modalError('Enter a quantity');
 
