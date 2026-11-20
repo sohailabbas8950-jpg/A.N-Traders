@@ -2196,7 +2196,7 @@ function openConsumptionProductPicker(initiallySelected, onApply, onCancel) {
 
 function exportConsumptionPdf(d, granularity, selectedCount) {
   if (!d) return toast('Nothing to export yet', 'error');
-  if (!window.jspdf) return toast('PDF library did not load — check your connection', 'error');
+  if (!window.jspdf) return toast('PDF library did not load — restart the app', 'error');
   const canSeeValue = S.user.role !== 'staff';
   const { jsPDF } = window.jspdf;
   const doc = new jsPDF();

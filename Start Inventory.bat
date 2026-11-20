@@ -20,7 +20,7 @@ if not exist "node_modules" (
   call npm install --no-fund --no-audit
   if errorlevel 1 (
     echo.
-    echo   Install failed. Check your internet connection and try again.
+    echo   Install failed. The first run needs internet once to install components; after that it works fully offline.
     pause
     exit /b 1
   )

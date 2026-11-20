@@ -7,7 +7,6 @@
 const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
-const os = require('node:os');
 const { handleApi } = require('./lib/app');
 const db = require('./lib/db');
 
@@ -61,18 +60,11 @@ const server = http.createServer(async (req, res) => {
 
 db.ensureReady()
   .then(() => {
-    server.listen(PORT, () => {
-      const ips = [];
-      for (const list of Object.values(os.networkInterfaces())) {
-        for (const n of list || []) {
-          if (n.family === 'IPv4' && !n.internal) ips.push(n.address);
-        }
-      }
+    server.listen(PORT, '127.0.0.1', () => {
       console.log('\n  A.N Traders — Inventory Management');
       console.log('  ----------------------------------');
       console.log(`  Database:          ${db.isLocalFile ? 'local file' : 'Turso (cloud)'}`);
       console.log(`  On this computer:  http://localhost:${PORT}`);
-      for (const ip of ips) console.log(`  On your network:   http://${ip}:${PORT}`);
       console.log('\n  Press Ctrl+C to stop.\n');
     });
   })
